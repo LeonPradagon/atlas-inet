@@ -51,6 +51,19 @@ body {
   scrollbar-width: thin;
 }
 
+.app-header .user-menu-avatar {
+  width: 5rem;
+  height: 5rem;
+  border: 3px solid var(--bs-border-color-translucent);
+  font-size: 3rem;
+}
+
+.app-header .user-menu > .dropdown-menu {
+  right: 0;
+  left: auto;
+  z-index: 1035;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sidebar-menu .nav-link {
     transition: none;

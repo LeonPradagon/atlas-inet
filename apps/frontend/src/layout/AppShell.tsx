@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { initialize, PushMenu, teardown, Treeview } from 'admin-lte'
-import { ApiStatusBadge } from '../components/ApiStatusBadge'
 import { atlasApi, currentUserQueryKey } from '../shared/api'
 
 const SIDEBAR_OPENED_EVENT = 'opened.lte.push-menu'
@@ -66,6 +65,8 @@ export function AppShell() {
   const activeGroup = navigationGroups.find((group) => group.items.some((item) => item.to === pathname))?.id ?? null
   const [openGroup, setOpenGroup] = useState<string | null>(activeGroup)
   const [sessionMessage, setSessionMessage] = useState('')
+  const [userMenuOpen, setUserMenuOpen] = useState(false)
+  const userMenuRef = useRef<HTMLLIElement>(null)
   const currentUserQuery = useQuery({
     queryKey: currentUserQueryKey,
     queryFn: ({ signal }) => atlasApi.auth.currentUser(signal),
@@ -88,6 +89,27 @@ export function AppShell() {
   useEffect(() => {
     setOpenGroup(activeGroup)
   }, [activeGroup])
+
+  useEffect(() => {
+    if (!userMenuOpen) return
+
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!userMenuRef.current?.contains(event.target as Node)) setUserMenuOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setUserMenuOpen(false)
+        userMenuRef.current?.querySelector<HTMLButtonElement>('#user-menu-toggle')?.focus()
+      }
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [userMenuOpen])
 
   useEffect(() => {
     if (!isLoginPage && !currentUserQuery.isPending && !isAuthenticated) {
@@ -180,12 +202,42 @@ export function AppShell() {
           <span className="navbar-brand mb-0 d-lg-none fw-light">ATLAS</span>
           <ul className="navbar-nav ms-auto align-items-center">
             {currentUserQuery.data
-              ? <>
-                  <li className="nav-item d-none d-md-block"><span className="nav-link">{currentUserQuery.data.user.name}</span></li>
-                  <li className="nav-item me-2"><button className="btn btn-outline-secondary btn-sm" type="button" disabled={signOutMutation.isPending} onClick={() => signOutMutation.mutate()}>{signOutMutation.isPending ? 'Keluar…' : 'Keluar'}</button></li>
-                </>
+              ? <li className={`nav-item dropdown user-menu ${userMenuOpen ? 'show' : ''}`} ref={userMenuRef}>
+                  <button
+                    id="user-menu-toggle"
+                    className="nav-link dropdown-toggle d-flex align-items-center gap-2"
+                    type="button"
+                    aria-expanded={userMenuOpen}
+                    aria-controls="user-menu-dropdown"
+                    onClick={() => setUserMenuOpen((open) => !open)}
+                  >
+                    <i className="bi bi-person-circle fs-5" aria-hidden="true" />
+                    <span>{currentUserQuery.data.user.name}</span>
+                  </button>
+                  <ul id="user-menu-dropdown" className={`dropdown-menu dropdown-menu-lg dropdown-menu-end ${userMenuOpen ? 'show' : ''}`} aria-labelledby="user-menu-toggle">
+                    <li className="user-header bg-primary text-white">
+                      <div className="user-menu-avatar bg-white text-primary rounded-circle d-flex align-items-center justify-content-center mx-auto" aria-hidden="true">
+                        <i className="bi bi-person-fill" />
+                      </div>
+                      <p>{currentUserQuery.data.user.name}<small>{currentUserQuery.data.user.email}</small></p>
+                    </li>
+                    <li className="user-footer d-flex justify-content-end">
+                      <button
+                        className="btn btn-outline-secondary btn-sm"
+                        type="button"
+                        disabled={signOutMutation.isPending}
+                        onClick={() => {
+                          setUserMenuOpen(false)
+                          signOutMutation.mutate()
+                        }}
+                      >
+                        <i className="bi bi-box-arrow-right me-1" aria-hidden="true" />
+                        {signOutMutation.isPending ? 'Keluar…' : 'Logout'}
+                      </button>
+                    </li>
+                  </ul>
+                </li>
               : <li className="nav-item"><Link to="/login" className="nav-link">Masuk</Link></li>}
-            <li className="nav-item me-2"><ApiStatusBadge /></li>
           </ul>
         </div>
       </nav>
