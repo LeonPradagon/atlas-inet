@@ -1,0 +1,15 @@
+node_modules/
+apps/*/node_modules/
+dist/
+apps/*/dist/
+apps/*/coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+apps/backend/.env
+apps/backend/.env.*
+apps/frontend/.env
+apps/frontend/.env.*
+!.env.example
+var/
