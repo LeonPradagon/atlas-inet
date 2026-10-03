@@ -8,6 +8,34 @@
       "when": 1790930172188,
       "tag": "0000_auth-and-postgis",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791009842541,
+      "tag": "0001_clever_krista_starr",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791010702266,
+      "tag": "0002_keen_lenny_balinger",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791013697416,
+      "tag": "0003_low_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791019047707,
+      "tag": "0004_rich_junta",
+      "breakpoints": true
     }
   ]
 }

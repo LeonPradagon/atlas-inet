@@ -1,1 +1,5 @@
 export { account, session, user, verification } from './auth.schema.js'
+export { entities, permissions, roles, rolePermissions, memberships, membershipRoles, accessAudit } from './access.schema.js'
+export { networkDatasets, cableTypes, networkNodes, networkSegments, poles, odcs, odps, segmentPoles, segmentOdcs, segmentOdps } from './network.schema.js'
+export { settings, auditLogs, bookings, allocations, waitingList, idempotencyRecords, outboxEvents, notifications, analysisResults, jobs, jobRows, importPreviews, cableNameHistory, analysisUploads } from './operations.schema.js'
+export { policyChangeRequests } from './policy-change.schema.js'

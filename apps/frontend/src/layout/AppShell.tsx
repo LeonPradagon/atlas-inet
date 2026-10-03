@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { initialize, PushMenu, teardown, Treeview } from 'admin-lte'
 import { atlasApi, currentUserQueryKey } from '../shared/api'
+import { domainKey, pagePermissions, useEntityScope } from '../shared/EntityScope'
+import { PermissionNotice } from '../components/DomainUi'
 
 const SIDEBAR_OPENED_EVENT = 'opened.lte.push-menu'
 const SIDEBAR_COLLAPSED_EVENT = 'collapsed.lte.push-menu'
@@ -57,6 +59,7 @@ const pageTitles: Record<string, string> = {
 
 export function AppShell() {
   const navigate = useNavigate()
+  const scope = useEntityScope()
   const queryClient = useQueryClient()
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const title = pageTitles[pathname] ?? 'ATLAS'
@@ -80,7 +83,10 @@ export function AppShell() {
     mutationFn: () => atlasApi.auth.signOut(),
     onSuccess: async () => {
       setSessionMessage('')
-      await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+      await queryClient.cancelQueries({ queryKey: ['atlas'] })
+      queryClient.removeQueries({ queryKey: ['atlas'] })
+      scope.select('')
+      await queryClient.resetQueries({ queryKey: currentUserQueryKey })
       await navigate({ to: '/login' })
     },
     onError: () => setSessionMessage('Tidak dapat mengakhiri sesi. Coba lagi.'),
@@ -200,6 +206,12 @@ export function AppShell() {
             </li>
           </ul>
           <span className="navbar-brand mb-0 d-lg-none fw-light">ATLAS</span>
+          <div className="ms-2"><label htmlFor="active-entity" className="visually-hidden">Lingkup entitas</label><select id="active-entity" className="form-select form-select-sm" value={scope.entity?.id ?? ''} disabled={!scope.entities.length} onChange={(event) => {
+            const previous = scope.entity?.id
+            void queryClient.cancelQueries({ queryKey: domainKey(previous, scope.user?.id) })
+            queryClient.removeQueries({ queryKey: domainKey(previous, scope.user?.id) })
+            scope.select(event.target.value)
+          }}>{!scope.entities.length && <option value="">Belum ada grant entitas</option>}{scope.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} · {entity.name}</option>)}</select></div>
           <ul className="navbar-nav ms-auto align-items-center">
             {currentUserQuery.data
               ? <li className={`nav-item dropdown user-menu ${userMenuOpen ? 'show' : ''}`} ref={userMenuRef}>
@@ -266,6 +278,8 @@ export function AppShell() {
                 </Link>
               </li>
               {navigationGroups.map((group) => {
+                const items = group.items.filter((item) => pagePermissions[item.to]?.some(scope.can))
+                if (!items.length) return null
                 const isOpen = openGroup === group.id
                 const isActive = group.items.some((item) => item.to === pathname)
                 return (
@@ -289,7 +303,7 @@ export function AppShell() {
                       <p>{group.label}<i className="nav-arrow bi bi-chevron-right" aria-hidden="true" /></p>
                     </button>
                     <ul id={`menu-${group.id}`} className="nav nav-treeview">
-                      {group.items.map((item) => {
+                      {items.map((item) => {
                         const active = pathname === item.to
                         return (
                           <li className="nav-item" key={item.to}>
@@ -331,7 +345,7 @@ export function AppShell() {
         </div>
         <div className="app-content">
           <div className="container-fluid page-container">
-            <Outlet />
+            {pathname !== '/' && !pagePermissions[pathname]?.some(scope.can) ? <PermissionNotice /> : <div key={`${currentUserQuery.data?.user.id}:${scope.entity?.id ?? 'none'}:${scope.entity?.permissions.join(',')}`}><Outlet /></div>}
           </div>
         </div>
       </main>

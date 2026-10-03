@@ -1,36 +1,23 @@
-import { useState, type FormEvent } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { atlasApi } from '../shared/api'
+import { domainKey, useEntityScope } from '../shared/EntityScope'
 import { ContentCard } from '../components/ContentCard'
-import { EmptyState } from '../components/EmptyState'
-import { FormStatus } from '../components/FormStatus'
-
+import { MutationStatus, numberLabel, Pagination, QueryState, useDomainMutation } from '../components/DomainUi'
+import { JobPanel } from '../components/JobPanel'
+import { SegmentDetail } from '../components/SegmentTools'
 export function ReportsPage() {
-  const [message, setMessage] = useState('')
-  const [exportMessage, setExportMessage] = useState('')
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
-
-  function applyFilters(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (startDate && endDate && startDate > endDate) {
-      setMessage('Tanggal mulai harus sama dengan atau sebelum tanggal akhir.')
-      return
-    }
-    setMessage('Filter valid. Data laporan belum tersedia dari API.')
-  }
-
-  return (
-    <>
-      <ContentCard title="Filter monitoring">
-          <form className="row align-items-end" onSubmit={applyFilters}>
-            <div className="col-md-4 mb-3"><label className="form-label" htmlFor="report-start">Dari tanggal</label><input className="form-control" id="report-start" type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></div>
-            <div className="col-md-4 mb-3"><label className="form-label" htmlFor="report-end">Sampai tanggal</label><input className="form-control" id="report-end" type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></div>
-            <div className="col-md-4 mb-3"><button className="btn btn-primary" type="submit"><i className="bi bi-funnel me-1" aria-hidden="true" />Terapkan filter</button></div>
-          </form>
-          <FormStatus message={message} tone={message.startsWith('Filter valid') ? 'info' : 'warning'} />
-      </ContentCard>
-      <ContentCard title="Utilisasi core" tools={<button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => setExportMessage('Export belum tersedia karena data laporan dan API belum tersedia.')}><i className="bi bi-download me-1" aria-hidden="true" />Export</button>}>
-        <EmptyState icon="bi-bar-chart" title="Belum ada data monitoring" detail="Ringkasan Used, Booked, Available, Idle, dan Waiting List akan muncul dari dataset API." />{exportMessage && <FormStatus message={exportMessage} />}
-      </ContentCard>
-    </>
-  )
+  const { entity, user, can } = useEntityScope()
+  const [page, setPage] = useState(1), [jobId, setJobId] = useState(''), [segmentId, setSegmentId] = useState('')
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'utilization', page), queryFn: ({ signal }) => atlasApi.reports.utilization(entity!.id, page, signal), enabled: Boolean(entity) && can('reports.read') })
+  const exportJob = useDomainMutation(() => atlasApi.reports.export(entity!.id))
+  return <>
+    <ContentCard title="Monitoring utilisasi saat ini" tools={can('reports.export') && <button className="btn btn-primary btn-sm" disabled={exportJob.isPending} onClick={() => exportJob.mutate(undefined, { onSuccess: (response) => setJobId(response.data.id) })}>Buat snapshot export</button>}>
+      <p className="small text-secondary">Snapshot: {query.data?.meta?.asOf ?? 'Belum dimuat'} · {entity?.name}. Filter historis periode belum tersedia. Export maksimal 10.000 segmen.</p>
+      {can('reports.read') && <><QueryState query={query} empty={query.data?.data.length === 0}><div className="table-responsive"><table className="table table-striped"><thead><tr><th>Segmen</th><th>Total</th><th>Used</th><th>Booked</th><th>Idle</th><th>Available</th><th>Waiting</th></tr></thead><tbody>{query.data?.data.map((row) => <tr key={row.segmentId}><td><button className="btn btn-link p-0" onClick={() => setSegmentId(row.segmentId)}>{row.segmentCode} · {row.cableName}</button></td>{(['total', 'used', 'booked', 'idle', 'available'] as const).map((field) => <td key={field}>{numberLabel(row[field])}</td>)}<td>{row.waitingCount} permintaan / {row.waitingCores} core</td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} /></>}
+      <MutationStatus mutation={exportJob} />
+    </ContentCard>
+    {segmentId && can('network.read') && <SegmentDetail id={segmentId} />}
+    {can('reports.export') && <JobPanel key={jobId || 'lookup'} id={jobId} onChange={setJobId} />}
+  </>
 }

@@ -11,7 +11,7 @@ import type {
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
-export type NetworkMapLayer = 'segments' | 'poles' | 'odcOdp'
+export type NetworkMapLayer = 'segments' | 'poles' | 'odc' | 'odp'
 export type NetworkMapStyle = 'liberty' | 'bright' | '3d'
 
 export type NetworkMapProperties = {
@@ -28,6 +28,8 @@ interface NetworkMapCanvasProps {
   visibleLayers: Record<NetworkMapLayer, boolean>
   search: string
   style: NetworkMapStyle
+  onViewportChange?: (bbox: string) => void
+  onSegmentSelect?: (id: string) => void
 }
 
 const featureColor: ExpressionSpecification = [
@@ -35,7 +37,8 @@ const featureColor: ExpressionSpecification = [
   ['get', 'layer'],
   'segments', '#0d6efd',
   'poles', '#fd7e14',
-  'odcOdp', '#198754',
+  'odc', '#6f42c1',
+  'odp', '#198754',
   '#6c757d',
 ]
 
@@ -63,7 +66,7 @@ function getFeatureBounds(features: NetworkMapFeature[], LngLatBoundsClass: type
   return bounds
 }
 
-export function NetworkMapCanvas({ features, visibleLayers, search, style }: NetworkMapCanvasProps) {
+export function NetworkMapCanvas({ features, visibleLayers, search, style, onViewportChange, onSegmentSelect }: NetworkMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const sourceRef = useRef<GeoJSONSource | null>(null)
@@ -71,6 +74,10 @@ export function NetworkMapCanvas({ features, visibleLayers, search, style }: Net
   const previousFeaturesRef = useRef<NetworkMapFeature[] | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const [mapLoadFailed, setMapLoadFailed] = useState(false)
+  const viewportCallback = useRef(onViewportChange)
+  const segmentCallback = useRef(onSegmentSelect)
+  viewportCallback.current = onViewportChange
+  segmentCallback.current = onSegmentSelect
 
   useEffect(() => {
     const container = containerRef.current
@@ -97,6 +104,14 @@ export function NetworkMapCanvas({ features, visibleLayers, search, style }: Net
       })
       map.addControl(new maplibre.NavigationControl(), 'top-right')
       mapRef.current = map
+      const reportViewport = () => {
+        if (!map) return
+        const bounds = map.getBounds()
+        const west = Math.max(-180, bounds.getWest()), east = Math.min(180, bounds.getEast())
+        const south = Math.max(-90, bounds.getSouth()), north = Math.min(90, bounds.getNorth())
+        if (west < east && south < north) viewportCallback.current?.([west, south, east, north].map((n) => n.toFixed(4)).join(','))
+      }
+      map.on('moveend', reportViewport)
 
       map.once('load', () => {
         if (cancelled || !map) return
@@ -158,6 +173,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, style }: Net
           if (!feature) return
 
           const properties = feature.properties as Record<string, unknown> | undefined
+          if (properties?.layer === 'segments' && typeof properties.id === 'string') segmentCallback.current?.(properties.id)
           const popupContent = document.createElement('div')
           const title = document.createElement('strong')
           title.textContent = String(properties?.name ?? properties?.id ?? 'Network feature')
@@ -177,6 +193,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, style }: Net
 
         setMapLoadFailed(false)
         setMapReady(true)
+        reportViewport()
       })
 
       map.on('error', () => {
@@ -218,7 +235,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, style }: Net
     source.setData(collection)
 
     const LngLatBoundsClass = boundsConstructorRef.current
-    if (previousFeaturesRef.current !== features && LngLatBoundsClass) {
+    if (!viewportCallback.current && previousFeaturesRef.current !== features && LngLatBoundsClass) {
       const bounds = getFeatureBounds(visibleFeatures, LngLatBoundsClass)
       if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 })
       previousFeaturesRef.current = features

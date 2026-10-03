@@ -40,7 +40,7 @@ services:
     build:
       context: apps/backend
       dockerfile: Dockerfile
-    environment:
+    environment: &backend-environment
       NODE_ENV: production
       PORT: 3000
       TRUST_PROXY_HOPS: 1
@@ -51,6 +51,9 @@ services:
       TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
       BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Jakarta}
       FILE_STORAGE_PATH: /app/files
+      GEOCODING_INTERNAL_URL: ${GEOCODING_INTERNAL_URL:-}
+      ROUTING_INTERNAL_URL: ${ROUTING_INTERNAL_URL:-}
+      WORKER_INTERVAL_MS: ${WORKER_INTERVAL_MS:-1000}
     volumes:
       - app_files:/app/files
     depends_on:
@@ -62,6 +65,17 @@ services:
       timeout: 4s
       retries: 6
       start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: apps/backend
+      dockerfile: Dockerfile
+    command: ["node", "dist/worker.js"]
+    environment: *backend-environment
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   web:

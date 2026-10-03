@@ -25,6 +25,7 @@ export function LoginPage() {
     setMessage('')
     try {
       await atlasApi.auth.signIn(email, password)
+      queryClient.removeQueries({ queryKey: ['atlas'] })
       await queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
       await navigate({ to: '/' })
     } catch (error) {

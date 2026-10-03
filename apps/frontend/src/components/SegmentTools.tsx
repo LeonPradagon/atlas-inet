@@ -1,0 +1,62 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { ApiError, atlasApi } from '../shared/api'
+import { domainKey, useEntityScope } from '../shared/EntityScope'
+import { dateLabel, Field, MutationStatus, numberLabel, Pagination, QueryState, useDomainMutation } from './DomainUi'
+import { ContentCard } from './ContentCard'
+import type { Segment } from '../shared/domain-types'
+
+export function SegmentPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const { entity, user, can } = useEntityScope()
+  const [page, setPage] = useState(1)
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segments', page), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal), enabled: Boolean(entity) && can('network.read') })
+  return <div className="mb-3"><Field label="ID segmen jaringan" name="segment-id" value={value} onChange={onChange} />{can('network.read') && <details><summary>Pilih dari segmen terotorisasi</summary><QueryState query={query} empty={query.data?.data.length === 0}><ul className="list-group mt-2">{query.data?.data.map((segment) => <li className="list-group-item" key={segment.id}><button className="btn btn-link text-start p-0" type="button" onClick={() => onChange(segment.id)}>{segment.segmentCode} · {segment.cableName}</button> <small>{segment.status}</small></li>)}</ul></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} /></details>}</div>
+}
+export function SegmentDetail({ id, editable = false }: { id: string; editable?: boolean }) {
+  const { entity, user, can } = useEntityScope()
+  const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segment', id), queryFn: async ({ signal }) => {
+    const response = await atlasApi.network.segment(id, signal)
+    if (response.data.ownerEntityId !== entity!.id) throw new ApiError('Segmen berada di entitas lain. Pilih entitas pemilik.', 403)
+    return response
+  }, enabled: validId && can('network.read') })
+  if (!validId || !can('network.read')) return <p className="text-secondary">Pilih ID segmen dengan izin baca untuk melihat detail kapasitas.</p>
+  return <ContentCard title="Detail segmen"><QueryState query={query}>{query.data && <>
+    <h4>{query.data.data.cableName}</h4><p className="small text-secondary">{query.data.data.segmentCode} · Dataset {query.data.data.datasetVersion} · {query.data.data.status}</p>
+    <dl className="row"><dt className="col-sm-4">Tipe / instalasi / sisi</dt><dd className="col-sm-8">{query.data.data.cableType?.name ?? 'Belum diketahui'} / {query.data.data.installationMethod ?? '—'} / {query.data.data.roadSide ?? '—'}</dd></dl>
+    <div className="table-responsive"><table className="table table-sm"><tbody>{(['total', 'used', 'booked', 'idle', 'available', 'waitingCount', 'waitingCores'] as const).map((key) => <tr key={key}><th>{key}</th><td>{numberLabel(query.data!.data.capacity[key])}</td></tr>)}</tbody></table></div>
+    <p className="small">Snapshot: {query.data.data.capacity.asOf}. Idle mencakup Booked; antrean tidak mengurangi Available.</p>
+    {Boolean(query.data.data.capacity.expiryPendingCount) && <div className="alert alert-info">{query.data.data.capacity.expiryPendingCount} booking sudah kedaluwarsa efektif dan tidak mengurangi Available; worker belum memperbarui status persisted.</div>}
+    {query.data.data.completeness.status !== 'COMPLETE' && <div className="alert alert-warning">Metadata belum lengkap: {query.data.data.completeness.missingFields.join(', ')}</div>}
+    <p>Tiang: {query.data.data.assets?.poles.map((p) => `${p.code} (${p.heightM} m)`).join(', ') || 'Tidak tercatat'}</p>
+    <p>ODC: {query.data.data.assets?.odcs.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+    <p>ODP: {query.data.data.assets?.odps.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+    {editable && can('network.write') && <MetadataEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
+    {editable && <NameHistoryPanel id={id} />}
+  </>}</QueryState></ContentCard>
+}
+function MetadataEditor({ segment }: { segment: Segment }) {
+  const [name, setName] = useState(segment.cableName)
+  const [core, setCore] = useState(segment.installedCoreCount?.toString() ?? '')
+  const [validated, setValidated] = useState(segment.capacityValidated)
+  const [type, setType] = useState(segment.cableType?.id ?? '')
+  const [method, setMethod] = useState(segment.installationMethod ?? '')
+  const [side, setSide] = useState(segment.roadSide ?? '')
+  const [status, setStatus] = useState(segment.status)
+  const update = useDomainMutation((fields: object) => atlasApi.network.update(segment.id, segment.version, fields))
+  return <form onSubmit={(event) => { event.preventDefault(); if (!update.isPending) update.mutate({ cableName: name, ...(core ? { installedCoreCount: Number(core) } : {}), capacityValidated: validated, cableTypeId: type || null, installationMethod: method || null, roadSide: side || null, status }) }}>
+    <h5>Edit metadata · versi {segment.version}</h5><Field label="Nama kabel" name="edit-cable-name" value={name} onChange={setName} /><Field label="Total core terpasang" name="edit-core" type="number" value={core} onChange={setCore} min={1} step="1" required={false} />
+    <label className="form-check mb-3"><input className="form-check-input" type="checkbox" checked={validated} onChange={(event) => setValidated(event.target.checked)} />Kapasitas sudah tervalidasi</label>
+    <Field label="ID master tipe kabel (kosong = hapus referensi)" name="edit-cable-type" value={type} onChange={setType} required={false} />
+    <label className="form-label" htmlFor="edit-method">Metode instalasi</label><select id="edit-method" className="form-select mb-3" value={method} onChange={(event) => setMethod(event.target.value)}><option value="">Belum diketahui</option><option value="AERIAL">Aerial</option><option value="BURIAL">Burial</option></select>
+    <label className="form-label" htmlFor="edit-side">Sisi jalan</label><select id="edit-side" className="form-select mb-3" value={side} onChange={(event) => setSide(event.target.value)}><option value="">Belum diketahui</option><option value="LEFT">Kiri</option><option value="RIGHT">Kanan</option></select>
+    <label className="form-label" htmlFor="edit-status">Status segmen</label><select id="edit-status" className="form-select mb-3" value={status} onChange={(event) => setStatus(event.target.value)}><option value="ACTIVE">Aktif</option><option value="INACTIVE">Nonaktif</option></select>
+    <button className="btn btn-primary" disabled={update.isPending}>Simpan metadata</button><MutationStatus mutation={update} />
+  </form>
+}
+function NameHistoryPanel({ id }: { id: string }) {
+  const { entity, user } = useEntityScope()
+  const [page, setPage] = useState(1)
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'name-history', id, page), queryFn: ({ signal }) => atlasApi.network.nameHistory(id, page, signal) })
+  return <details className="mt-3"><summary>Histori perubahan nama</summary><QueryState query={query} empty={query.data?.data.length === 0}><ul>{query.data?.data.map((row) => <li key={row.id}>{row.oldName} → {row.newName} · policy {row.policyVersion} · {dateLabel(row.createdAt)} · {row.actorId}</li>)}</ul></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} /></details>
+}

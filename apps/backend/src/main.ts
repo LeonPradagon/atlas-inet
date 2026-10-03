@@ -56,6 +56,7 @@ async function bootstrap() {
   app.useGlobalFilters(new ApiExceptionFilter())
   app.enableShutdownHooks()
   await app.listen(config.port, '0.0.0.0')
+  console.log(JSON.stringify({ event: 'API_LISTENING', port: config.port }))
 }
 
 void bootstrap()

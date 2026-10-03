@@ -8,6 +8,8 @@ const originSchema = z.string().url().refine((value) => {
     && !parsed.search
     && !parsed.hash
 }, 'Expected an HTTP(S) origin without a path')
+const internalUrlSchema = z.preprocess((value) => value === '' ? undefined : value,
+  z.string().url().refine((value) => ['http:', 'https:'].includes(new URL(value).protocol)).optional())
 
 const AppConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -22,16 +24,14 @@ const AppConfigSchema = z.object({
     .transform((value) => value.split(',').map((origin) => origin.trim()).filter(Boolean))
     .pipe(z.array(originSchema).min(1))
     .transform((origins) => origins.map((origin) => new URL(origin).origin)),
-  BUSINESS_TIMEZONE: z.string().default('Asia/Jakarta').refine((value) => {
-    try {
-      new Intl.DateTimeFormat('en', { timeZone: value })
-      return true
-    } catch {
-      return false
-    }
-  }, 'Expected a valid IANA time zone'),
+  BUSINESS_TIMEZONE: z.literal('Asia/Jakarta').default('Asia/Jakarta'),
   FILE_STORAGE_PATH: z.string().min(1).default('./var/files'),
-}).transform((env) => ({
+  GEOCODING_INTERNAL_URL: internalUrlSchema,
+  PHOTON_INTERNAL_URL: internalUrlSchema,
+  GEOCODING_DATASET_VERSION: z.string().trim().min(1).max(200).optional(),
+  ROUTING_INTERNAL_URL: internalUrlSchema,
+  WORKER_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1000),
+}).refine((env) => !(env.GEOCODING_INTERNAL_URL && env.PHOTON_INTERNAL_URL), 'Choose one internal geocoding provider').transform((env) => ({
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
   trustProxyHops: env.TRUST_PROXY_HOPS,
@@ -42,6 +42,11 @@ const AppConfigSchema = z.object({
   trustedOrigins: env.TRUSTED_ORIGINS,
   businessTimezone: env.BUSINESS_TIMEZONE,
   fileStoragePath: env.FILE_STORAGE_PATH,
+  geocodingInternalUrl: env.GEOCODING_INTERNAL_URL,
+  photonInternalUrl: env.PHOTON_INTERNAL_URL,
+  geocodingDatasetVersion: env.GEOCODING_DATASET_VERSION,
+  routingInternalUrl: env.ROUTING_INTERNAL_URL,
+  workerIntervalMs: env.WORKER_INTERVAL_MS,
 }))
 
 export type AppConfig = z.infer<typeof AppConfigSchema>
