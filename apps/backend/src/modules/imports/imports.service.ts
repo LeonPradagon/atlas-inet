@@ -1,13 +1,13 @@
 import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common'
-import { and, asc, eq, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { DatabaseService } from '../../database/database.service.js'
 import type { Transaction } from '../../database/transaction.js'
-import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDatasets, networkNodes, networkSegments, odcs, odps, poles, segmentOdcs, segmentOdps, segmentPoles } from '../../database/schema/index.js'
+import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDatasets, networkNodes, networkSegments, odcs, odps, poles, referenceAreas, referenceFeatures, segmentOdcs, segmentOdps, segmentPoles } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
 import { validateCableName } from '../assets/assets.service.js'
 import { readUsage } from '../capacity/capacity.repository.js'
-import { assetRowSchema, pointAddressSchema, type AssetRow, type ImportError, parseAssetFile } from './import-parser.js'
+import { assetRowSchema, pointAddressSchema, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
 import type { UploadFile } from '../files/tabular-files.js'
 import { InternalAdapters } from '../analysis/internal-adapters.js'
 import { parseInput } from '../../common/domain-input.js'
@@ -21,10 +21,14 @@ async function fingerprint(db: Db, entityId: string, sourceSystem: string) {
     UNION ALL SELECT 'pole:' || to_jsonb(s)::text FROM poles s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'odc:' || to_jsonb(s)::text FROM odcs s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'odp:' || to_jsonb(s)::text FROM odps s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
+    UNION ALL SELECT 'reference-area:' || to_jsonb(s)::text FROM reference_areas s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
+    UNION ALL SELECT 'reference-feature:' || to_jsonb(s)::text FROM reference_features s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
   ) state`)
   return result.rows[0].hash
 }
-const geom = (row: AssetRow) => sql`ST_SetSRID(ST_GeomFromGeoJSON(${JSON.stringify(row.geometry)}),4326)`
+const geom = (row: { geometry: unknown }) => sql`ST_SetSRID(ST_GeomFromGeoJSON(${JSON.stringify(row.geometry)}),4326)`
+const hasUnmappedReferenceFeatures = (preview: { referenceFeatures: Record<string, unknown>[] }) =>
+  preview.referenceFeatures.some((feature) => feature.assetRowValid !== true)
 
 @Injectable()
 export class ImportsService {
@@ -34,8 +38,10 @@ export class ImportsService {
     await this.access.requireEntityPermission(userId, entityId, 'imports.write')
     const parsed = await parseAssetFile(file, mappings)
     const baseFingerprint = await fingerprint(this.database.db, entityId, sourceSystem)
-    const [preview] = await this.database.db.insert(importPreviews).values({ entityId, ownerId: userId, sourceSystem, sourceName: file.originalname, rows: parsed.rows, errors: parsed.errors, baseFingerprint }).returning()
-    return { data: preview, meta: { valid: parsed.rows.length, invalid: parsed.errors.length, publishRequiresDomainValidation: true } }
+    const [preview] = await this.database.db.insert(importPreviews).values({ entityId, ownerId: userId, sourceSystem, sourceName: file.originalname, rows: parsed.rows, areas: parsed.areas, referenceFeatures: parsed.referenceFeatures, errors: parsed.errors, baseFingerprint }).returning()
+    const hasReferences = parsed.areas.length > 0 || parsed.referenceFeatures.length > 0
+    const published = hasReferences ? await this.publishAreas(userId, preview.id, `reference-${preview.id}`) : { data: preview }
+    return { data: published.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, publishRequiresDomainValidation: true } }
   }
 
   async get(userId: string, id: string) {
@@ -89,16 +95,66 @@ export class ImportsService {
     })
   }
 
+  async publishAreas(userId: string, id: string, version: string) {
+    const { data: preview } = await this.get(userId, id)
+    if (!preview.areas.length && !preview.referenceFeatures.length) throw new UnprocessableEntityException('Import preview has no valid reference features')
+    if (preview.status !== 'PREVIEW') throw new ConflictException('Import is already published')
+    return this.database.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${preview.entityId + ':network-write'},0))`)
+      const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
+      if (current.areasPublishedAt) return { data: current }
+      if (current.status !== 'PREVIEW') throw new ConflictException('Import is already published')
+      const areas = current.areas as ReferenceAreaRow[]
+      const referenceRows = current.referenceFeatures as ReferenceFeatureRow[]
+      if (!areas.length && !referenceRows.length) throw new UnprocessableEntityException('Import preview has no valid reference features')
+      if (await fingerprint(tx, preview.entityId, preview.sourceSystem) !== current.baseFingerprint) throw new ConflictException('Source dataset changed; create a new preview')
+      const datasets = await tx.select().from(networkDatasets).where(and(eq(networkDatasets.ownerEntityId, preview.entityId), eq(networkDatasets.sourceSystem, preview.sourceSystem)))
+      if (datasets.length > 1 || datasets.some((dataset) => dataset.status !== 'PUBLISHED')) throw new ConflictException('Source has multiple or unpublished datasets; explicit migration is required')
+      let dataset = datasets[0]
+      if (!dataset) [dataset] = await tx.insert(networkDatasets).values({ ownerEntityId: preview.entityId, version, sourceSystem: preview.sourceSystem, createdBy: userId }).returning()
+      else if (dataset.version === version) throw new ConflictException('Publish requires a new dataset version')
+      const source = { ownerEntityId: preview.entityId, datasetId: dataset.id, sourceSystem: preview.sourceSystem, sourceFile: preview.sourceName }
+      const identities = new Set<string>()
+      for (const area of areas) {
+        if (identities.has(area.externalId)) throw new ConflictException(`Duplicate reference-area identity at row ${area.rowNumber}`)
+        identities.add(area.externalId)
+        const [existing] = await tx.select().from(referenceAreas).where(and(
+          eq(referenceAreas.ownerEntityId, preview.entityId), eq(referenceAreas.sourceSystem, preview.sourceSystem), eq(referenceAreas.externalId, area.externalId),
+        ))
+        const data = { ...source, externalId: area.externalId, code: area.code, name: area.name, properties: area.properties, geometry: geom(area) }
+        if (existing) await tx.update(referenceAreas).set(data).where(eq(referenceAreas.id, existing.id))
+        else await tx.insert(referenceAreas).values({ ...data, createdBy: userId })
+      }
+      for (const feature of referenceRows) {
+        if (identities.has(feature.externalId)) throw new ConflictException(`Duplicate reference-feature identity at row ${feature.rowNumber}`)
+        identities.add(feature.externalId)
+        const [existing] = await tx.select().from(referenceFeatures).where(and(
+          eq(referenceFeatures.ownerEntityId, preview.entityId), eq(referenceFeatures.sourceSystem, preview.sourceSystem), eq(referenceFeatures.externalId, feature.externalId),
+        ))
+        const data = { ...source, externalId: feature.externalId, name: feature.name, properties: feature.properties, geometry: geom(feature) }
+        if (existing) await tx.update(referenceFeatures).set(data).where(eq(referenceFeatures.id, existing.id))
+        else await tx.insert(referenceFeatures).values({ ...data, createdBy: userId })
+      }
+      await tx.update(networkDatasets).set({ version, status: 'PUBLISHED', publishedAt: sql`clock_timestamp()` }).where(eq(networkDatasets.id, dataset.id))
+      const baseFingerprint = await fingerprint(tx, preview.entityId, preview.sourceSystem)
+      const [updated] = await tx.update(importPreviews).set({ datasetId: dataset.id, areasPublishedAt: sql`clock_timestamp()`, baseFingerprint }).where(eq(importPreviews.id, id)).returning()
+      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_REFERENCE_AREAS_PUBLISHED', resourceId: id, details: { datasetId: dataset.id, version, referenceAreas: areas.length, referenceFeatures: referenceRows.length } })
+      return { data: updated }
+    })
+  }
+
   async publish(userId: string, id: string, version: string) {
     const { data: preview } = await this.get(userId, id)
-    if (preview.errors.length || !preview.rows.length) throw new UnprocessableEntityException('Resolve all import errors before publishing')
+    if (preview.errors.length || hasUnmappedReferenceFeatures(preview) || (!preview.rows.length && !preview.areas.length)) throw new UnprocessableEntityException('Resolve import errors and map reference features before operational publish')
     return this.database.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${preview.entityId + ':network-write'},0))`)
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status === 'PUBLISHED') return { data: { id, datasetId: current.datasetId, status: current.status } }
-      if (current.errors.length || !current.rows.length) throw new UnprocessableEntityException('Resolve all import errors before publishing')
+      if (current.errors.length || hasUnmappedReferenceFeatures(current) || (!current.rows.length && !current.areas.length)) throw new UnprocessableEntityException('Resolve import errors and map reference features before operational publish')
       if (await fingerprint(tx, preview.entityId, preview.sourceSystem) !== preview.baseFingerprint) throw new ConflictException('Source dataset changed; create a new preview')
       const rows = current.rows as AssetRow[]
+      const areas = current.areas as ReferenceAreaRow[]
+      const referenceRows = current.referenceFeatures as ReferenceFeatureRow[]
       const datasets = await tx.select().from(networkDatasets).where(and(eq(networkDatasets.ownerEntityId, preview.entityId), eq(networkDatasets.sourceSystem, preview.sourceSystem)))
       if (datasets.length > 1 || datasets.some((d) => d.status !== 'PUBLISHED')) throw new ConflictException('Source has multiple or unpublished datasets; explicit migration is required')
       let dataset = datasets[0]
@@ -167,9 +223,32 @@ export class ImportsService {
           }
         }
       }
+      const areaIdentities = new Set<string>()
+      for (const area of areas) {
+        if (areaIdentities.has(area.externalId)) throw new ConflictException(`Duplicate reference-area identity at row ${area.rowNumber}`)
+        areaIdentities.add(area.externalId)
+        const [existing] = await tx.select().from(referenceAreas).where(and(
+          eq(referenceAreas.ownerEntityId, preview.entityId), eq(referenceAreas.sourceSystem, preview.sourceSystem), eq(referenceAreas.externalId, area.externalId),
+        ))
+        const data = { ...source, externalId: area.externalId, code: area.code, name: area.name, properties: area.properties, geometry: geom(area) }
+        if (existing) await tx.update(referenceAreas).set(data).where(eq(referenceAreas.id, existing.id))
+        else await tx.insert(referenceAreas).values({ ...data, createdBy: userId })
+      }
+      for (const feature of referenceRows.filter((row) => row.assetRowValid !== true)) {
+        const [existing] = await tx.select().from(referenceFeatures).where(and(
+          eq(referenceFeatures.ownerEntityId, preview.entityId), eq(referenceFeatures.sourceSystem, preview.sourceSystem), eq(referenceFeatures.externalId, feature.externalId),
+        ))
+        const data = { ...source, externalId: feature.externalId, name: feature.name, properties: feature.properties, geometry: geom(feature) }
+        if (existing) await tx.update(referenceFeatures).set(data).where(eq(referenceFeatures.id, existing.id))
+        else await tx.insert(referenceFeatures).values({ ...data, createdBy: userId })
+      }
+      if (rows.length) await tx.delete(referenceFeatures).where(and(
+        eq(referenceFeatures.ownerEntityId, preview.entityId), eq(referenceFeatures.sourceSystem, preview.sourceSystem),
+        inArray(referenceFeatures.externalId, rows.map((row) => `placemark-${row.rowNumber}`)),
+      ))
       await tx.update(networkDatasets).set({ version, status: 'PUBLISHED', publishedAt: sql`clock_timestamp()` }).where(eq(networkDatasets.id, dataset.id))
       await tx.update(importPreviews).set({ status: 'PUBLISHED', datasetId: dataset.id, publishedAt: sql`clock_timestamp()` }).where(eq(importPreviews.id, id))
-      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_PUBLISHED', resourceId: id, details: { datasetId: dataset.id, version, rows: rows.length, mode: 'MERGE' } })
+      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_PUBLISHED', resourceId: id, details: { datasetId: dataset.id, version, rows: rows.length, referenceAreas: areas.length, referenceFeatures: referenceRows.length, mode: 'MERGE' } })
       return { data: { id, datasetId: dataset.id, status: 'PUBLISHED' } }
     })
   }

@@ -5,6 +5,7 @@ import { initialize, PushMenu, teardown, Treeview } from 'admin-lte'
 import { atlasApi, currentUserQueryKey } from '../shared/api'
 import { domainKey, pagePermissions, useEntityScope } from '../shared/EntityScope'
 import { PermissionNotice } from '../components/DomainUi'
+import { NotificationBell } from '../components/NotificationBell'
 
 const SIDEBAR_OPENED_EVENT = 'opened.lte.push-menu'
 const SIDEBAR_COLLAPSED_EVENT = 'collapsed.lte.push-menu'
@@ -13,29 +14,36 @@ const dashboardItem = { label: 'Dashboard', to: '/', icon: 'bi-speedometer2' }
 
 const navigationGroups = [
   {
-    id: 'operasional',
-    label: 'Operasional',
-    icon: 'bi-briefcase',
+    id: 'jaringan-analisis',
+    label: 'Jaringan & Analisis',
+    icon: 'bi-diagram-3',
     items: [
-      { label: 'Network Map', to: '/network', icon: 'bi-map' },
-      { label: 'Analisis Alamat', to: '/analysis', icon: 'bi-geo-alt' },
+      { label: 'Analisis Lokasi', to: '/analysis', icon: 'bi-geo-alt' },
+      { label: 'Peta Jaringan', to: '/network', icon: 'bi-map' },
+      { label: 'Aset & Impor Jaringan', to: '/assets', icon: 'bi-diagram-3' },
+    ],
+  },
+  {
+    id: 'booking-kapasitas',
+    label: 'Booking & Kapasitas',
+    icon: 'bi-bookmark-check',
+    items: [
       { label: 'Booking Core', to: '/bookings', icon: 'bi-bookmark-check' },
-      { label: 'Waiting List', to: '/waiting-list', icon: 'bi-list-ol' },
+      { label: 'Daftar Tunggu', to: '/waiting-list', icon: 'bi-list-ol' },
+    ],
+  },
+  {
+    id: 'monitoring',
+    label: 'Monitoring',
+    icon: 'bi-bar-chart',
+    items: [
+      { label: 'Laporan & Ekspor', to: '/reports', icon: 'bi-file-earmark-spreadsheet' },
       { label: 'Notifikasi', to: '/notifications', icon: 'bi-bell' },
     ],
   },
   {
-    id: 'jaringan',
-    label: 'Jaringan & Monitoring',
-    icon: 'bi-diagram-3',
-    items: [
-      { label: 'Aset Jaringan', to: '/assets', icon: 'bi-diagram-3' },
-      { label: 'Monitoring & Export', to: '/reports', icon: 'bi-bar-chart' },
-    ],
-  },
-  {
-    id: 'sistem',
-    label: 'Sistem',
+    id: 'administrasi',
+    label: 'Administrasi',
     icon: 'bi-gear',
     items: [
       { label: 'Pengaturan', to: '/settings', icon: 'bi-gear' },
@@ -46,12 +54,12 @@ const navigationGroups = [
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
-  '/network': 'Network Map',
-  '/analysis': 'Analisis Alamat',
+  '/network': 'Peta Jaringan',
+  '/analysis': 'Analisis Lokasi',
   '/bookings': 'Booking Core',
   '/waiting-list': 'Waiting List',
-  '/assets': 'Aset Jaringan',
-  '/reports': 'Monitoring & Export',
+  '/assets': 'Aset & Impor Jaringan',
+  '/reports': 'Laporan & Ekspor',
   '/notifications': 'Notifikasi',
   '/settings': 'Pengaturan',
   '/access-audit': 'Pengguna & Audit',
@@ -206,13 +214,14 @@ export function AppShell() {
             </li>
           </ul>
           <span className="navbar-brand mb-0 d-lg-none fw-light">ATLAS</span>
-          <div className="ms-2"><label htmlFor="active-entity" className="visually-hidden">Lingkup entitas</label><select id="active-entity" className="form-select form-select-sm" value={scope.entity?.id ?? ''} disabled={!scope.entities.length} onChange={(event) => {
+          {scope.entities.length !== 1 && <div className="ms-2"><label htmlFor="active-entity" className="visually-hidden">Lingkup entitas</label><select id="active-entity" className="form-select form-select-sm" value={scope.entity?.id ?? ''} disabled={!scope.entities.length} onChange={(event) => {
             const previous = scope.entity?.id
             void queryClient.cancelQueries({ queryKey: domainKey(previous, scope.user?.id) })
             queryClient.removeQueries({ queryKey: domainKey(previous, scope.user?.id) })
             scope.select(event.target.value)
-          }}>{!scope.entities.length && <option value="">Belum ada grant entitas</option>}{scope.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} · {entity.name}</option>)}</select></div>
+          }}>{!scope.entities.length && <option value="">Belum ada grant entitas</option>}{scope.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} · {entity.name}</option>)}</select></div>}
           <ul className="navbar-nav ms-auto align-items-center">
+            <NotificationBell />
             {currentUserQuery.data
               ? <li className={`nav-item dropdown user-menu ${userMenuOpen ? 'show' : ''}`} ref={userMenuRef}>
                   <button

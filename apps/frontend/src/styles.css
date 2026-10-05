@@ -84,6 +84,54 @@ body {
   z-index: 0;
 }
 
+.maplibregl-popup-content .network-map-popup-title {
+  display: block;
+  padding: 0.4rem 0.6rem;
+  border-left: 4px solid #ffb800;
+  border-radius: 0.25rem;
+  background: #fff4cc;
+  color: #17202a;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.maplibregl-popup-content .network-map-popup-title[tabindex] {
+  cursor: crosshair;
+}
+
+.maplibregl-popup-content .network-map-popup-layer {
+  margin-top: 0.35rem;
+  color: #344054;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.maplibregl-popup-content .network-map-popup-details {
+  display: grid;
+  grid-template-columns: minmax(8rem, 38%) minmax(0, 1fr);
+  max-height: min(60vh, 34rem);
+  margin: 0.75rem 0 0;
+  overflow: auto;
+  color: #344054;
+  font-size: 0.9rem;
+}
+
+.network-map-popup-details dt,
+.network-map-popup-details dd {
+  min-width: 0;
+  margin: 0;
+  padding: 0.4rem 0.35rem;
+  border-bottom: 1px solid #e4e7ec;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.network-map-popup-details dt {
+  color: #667085;
+  font-weight: 700;
+}
+
 .info-box .info-box-icon {
   flex: 0 0 70px;
   height: 70px;

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { and, asc, eq } from 'drizzle-orm'
 import { DatabaseService } from '../../database/database.service.js'
-import { entities, memberships, membershipRoles, roles, rolePermissions } from '../../database/schema/index.js'
+import { entities, memberships, membershipRoles, roles, rolePermissions, user } from '../../database/schema/index.js'
 
 export interface EntityAccess {
   id: string
@@ -10,6 +10,7 @@ export interface EntityAccess {
   roles: string[]
   permissions: string[]
 }
+export interface PresalesUser { id: string; name: string }
 
 @Injectable()
 export class AccessRepository {
@@ -43,5 +44,15 @@ export class AccessRepository {
     return [...result.values()].map((entity) => ({
       ...entity, roles: entity.roles.sort(), permissions: entity.permissions.sort(),
     }))
+  }
+
+  async findPresalesUsers(entityId: string): Promise<PresalesUser[]> {
+    return this.database.db.selectDistinct({ id: user.id, name: user.name }).from(memberships)
+      .innerJoin(user, eq(user.id, memberships.userId))
+      .innerJoin(membershipRoles, eq(membershipRoles.membershipId, memberships.id))
+      .innerJoin(roles, and(eq(roles.id, membershipRoles.roleId), eq(roles.active, true)))
+      .innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id))
+      .where(and(eq(memberships.entityId, entityId), eq(memberships.active, true), eq(rolePermissions.permissionCode, 'bookings.create')))
+      .orderBy(asc(user.name), asc(user.id))
   }
 }

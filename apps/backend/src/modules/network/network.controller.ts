@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
-import { mapQuerySchema, parseNetworkInput, segmentsQuerySchema } from './network.dto.js'
+import { mapQuerySchema, networkSearchQuerySchema, parseNetworkInput, segmentsQuerySchema } from './network.dto.js'
 import { NetworkService } from './network.service.js'
 
 @Controller('network')
@@ -22,5 +22,10 @@ export class NetworkController {
   @Get('map')
   map(@Req() request: AuthenticatedRequest, @Query() query: Record<string, unknown>) {
     return this.network.getMap(request.authSession.user.id, parseNetworkInput(mapQuerySchema, query))
+  }
+
+  @Get('search')
+  search(@Req() request: AuthenticatedRequest, @Query() query: Record<string, unknown>) {
+    return this.network.search(request.authSession.user.id, parseNetworkInput(networkSearchQuerySchema, query))
   }
 }

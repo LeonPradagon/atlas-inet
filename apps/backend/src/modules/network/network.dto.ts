@@ -20,11 +20,18 @@ export const segmentsQuerySchema = z.object({
 export const mapQuerySchema = z.object({
   ...viewportFields,
   layers: z.string().default('segments,poles,odc,odp').transform((value) => [...new Set(value.split(',').map((item) => item.trim()))])
-    .pipe(z.array(z.enum(['segments', 'poles', 'odc', 'odp'])).min(1).max(4)),
+    .pipe(z.array(z.enum(['segments', 'poles', 'odc', 'odp', 'areas', 'references'])).min(1).max(6)),
+}).strict()
+
+export const networkSearchQuerySchema = z.object({
+  entityId: z.uuid(),
+  q: z.string().trim().min(2).max(120),
+  limit: z.coerce.number().int().min(1).max(25).default(15),
 }).strict()
 
 export type SegmentsQuery = z.output<typeof segmentsQuerySchema>
 export type MapQuery = z.output<typeof mapQuerySchema>
+export type NetworkSearchQuery = z.output<typeof networkSearchQuerySchema>
 export type BBox = SegmentsQuery['bbox']
 
 export function parseNetworkInput<T>(schema: z.ZodType<T>, value: unknown): T {

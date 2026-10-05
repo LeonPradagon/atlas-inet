@@ -7,6 +7,8 @@
     "dev:worker": "npm --prefix apps/backend run worker:dev",
     "geocoding:setup": "node scripts/geocoding/photon.mjs setup",
     "geocoding:start": "node scripts/geocoding/photon.mjs start",
+    "routing:setup": "node scripts/routing/graphhopper.mjs setup",
+    "routing:start": "node scripts/routing/graphhopper.mjs start",
     "build": "npm --prefix apps/frontend run build && npm --prefix apps/backend run build",
     "typecheck": "npm --prefix apps/frontend run typecheck && npm --prefix apps/backend run typecheck"
   }

@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { boolean, check, customType, foreignKey, index, integer, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core'
+import { boolean, check, customType, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core'
 import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { entities } from './access.schema.js'
 
@@ -77,6 +77,54 @@ export const poles = pgTable('poles', {
 ])
 export const odcs = pgTable('odcs', pointColumns(), (table) => pointConstraints('odcs', table))
 export const odps = pgTable('odps', pointColumns(), (table) => pointConstraints('odps', table))
+
+export const referenceAreas = pgTable('reference_areas', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerEntityId: uuid('owner_entity_id').notNull(),
+  datasetId: uuid('dataset_id').notNull(),
+  code: text('code').notNull(),
+  name: text('name').notNull(),
+  properties: jsonb('properties').$type<Record<string, string>>().notNull().default({}),
+  geometry: geometry('geometry', { type: 'Geometry' }).notNull(),
+  sourceSystem: text('source_system').notNull(),
+  sourceFile: text('source_file'),
+  externalId: text('external_id').notNull(),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique('reference_areas_id_scope_unique').on(table.id, table.ownerEntityId, table.datasetId),
+  unique('reference_areas_source_identity_unique').on(table.ownerEntityId, table.sourceSystem, table.externalId),
+  foreignKey({ columns: [table.datasetId, table.ownerEntityId], foreignColumns: [networkDatasets.id, networkDatasets.ownerEntityId] }),
+  index('reference_areas_geometry_gist').using('gist', table.geometry),
+  index('reference_areas_owner_dataset_idx').on(table.ownerEntityId, table.datasetId),
+  check('reference_areas_labels_valid', sql`length(trim(${table.code})) > 0 AND length(trim(${table.name})) > 0 AND length(trim(${table.sourceSystem})) > 0 AND length(trim(${table.externalId})) > 0 AND length(trim(${table.createdBy})) > 0`),
+  check('reference_areas_geometry_type', sql`ST_GeometryType(${table.geometry}) IN ('ST_Polygon', 'ST_MultiPolygon')`),
+  ...geometryChecks('reference_areas', table.geometry),
+])
+
+export const referenceFeatures = pgTable('reference_features', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerEntityId: uuid('owner_entity_id').notNull(),
+  datasetId: uuid('dataset_id').notNull(),
+  externalId: text('external_id').notNull(),
+  name: text('name').notNull(),
+  properties: jsonb('properties').$type<Record<string, string>>().notNull().default({}),
+  geometry: geometry('geometry', { type: 'Geometry' }).notNull(),
+  sourceSystem: text('source_system').notNull(),
+  sourceFile: text('source_file'),
+  createdBy: text('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique('reference_features_id_scope_unique').on(table.id, table.ownerEntityId, table.datasetId),
+  unique('reference_features_source_identity_unique').on(table.ownerEntityId, table.sourceSystem, table.externalId),
+  foreignKey({ columns: [table.datasetId, table.ownerEntityId], foreignColumns: [networkDatasets.id, networkDatasets.ownerEntityId] }),
+  index('reference_features_geometry_gist').using('gist', table.geometry),
+  index('reference_features_owner_dataset_idx').on(table.ownerEntityId, table.datasetId),
+  check('reference_features_labels_valid', sql`length(trim(${table.name})) > 0 AND length(trim(${table.sourceSystem})) > 0 AND length(trim(${table.externalId})) > 0 AND length(trim(${table.createdBy})) > 0`),
+  check('reference_features_geometry_type', sql`ST_GeometryType(${table.geometry}) IN ('ST_Point', 'ST_LineString', 'ST_MultiLineString')`),
+  check('reference_features_geometry_line', sql`ST_GeometryType(${table.geometry}) = 'ST_Point' OR ST_Length(${table.geometry}) > 0`),
+  ...geometryChecks('reference_features', table.geometry),
+])
 
 export const networkSegments = pgTable('network_segments', {
   id: uuid('id').primaryKey().defaultRandom(),

@@ -18,7 +18,7 @@ export class AnalysisService {
     let preliminary: Record<string, unknown> | null = null
     let geocodingProvenance: Record<string, unknown> = {}
     if (!coordinates) {
-      const geocoding = await this.adapters.geocode(input.address!)
+      const geocoding = await this.adapters.geocode(input.address!, persist)
       if (geocoding.status !== 'OK') preliminary = { ...geocoding, needsSurvey: true }
       else {
         coordinates = { latitude: geocoding.candidate.latitude, longitude: geocoding.candidate.longitude }
@@ -46,8 +46,8 @@ export class AnalysisService {
       const nearest = rows.rows[0]
       result = { status: nearest ? 'OK' : 'NO_NETWORK_IN_RADIUS', coordinates, coordinateSource: input.latitude !== undefined ? 'INPUT_COORDINATES_USED' : 'INTERNAL_GEOCODING', radiusM: policy.radiusM, policyVersion:setting?.version ?? 0, nearest: nearest ?? null, estimationMethod: nearest ? 'GEOMETRIC_PRELIMINARY' : 'NOT_AVAILABLE', nearestNetworkDistanceM: nearest?.distanceM ?? null, estimatedCableLengthM: null, route: null, needsSurvey: true }
       if (nearest && input.connectionPointId) {
-        const points = await this.database.db.execute<{ geometry: unknown }>(sql`SELECT ST_AsGeoJSON(p.geometry,15)::jsonb AS geometry FROM odps p JOIN segment_odps l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid
-          UNION ALL SELECT ST_AsGeoJSON(p.geometry,15)::jsonb FROM odcs p JOIN segment_odcs l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid`)
+        const points = await this.database.db.execute<{ geometry: unknown; type: 'ODC' | 'ODP' }>(sql`SELECT ST_AsGeoJSON(p.geometry,15)::jsonb AS geometry, 'ODP'::text AS type FROM odps p JOIN segment_odps l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid AND ${input.connectionPointType !== 'ODC'}
+          UNION ALL SELECT ST_AsGeoJSON(p.geometry,15)::jsonb, 'ODC'::text FROM odcs p JOIN segment_odcs l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid AND ${input.connectionPointType !== 'ODP'}`)
         if (!points.rows[0]) result.routeStatus = 'CONNECTION_POINT_NOT_VALIDATED'
         else {
           const route = await this.adapters.route(coordinates!, points.rows[0].geometry)
@@ -55,6 +55,7 @@ export class AnalysisService {
           const accepted = route && policy.maxDetourPercent !== null && detourPercent !== null && detourPercent<=policy.maxDetourPercent
           result.route = accepted ? route : null
           result.routeStatus = route ? 'ROAD_ROUTE_ESTIMATE' : 'ROUTING_NOT_AVAILABLE'
+          result.connectionPointType = points.rows[0].type
           if (route && !accepted) result.routeStatus = 'ROUTE_POLICY_NOT_MET_OR_UNCONFIGURED'
           if (accepted) {
             result.estimationMethod = 'ROAD_ROUTE_ESTIMATE'

@@ -7,6 +7,11 @@ import { NotificationsService } from './notifications.service.js'
 @UseGuards(AuthSessionGuard)
 export class NotificationsController {
   constructor(private readonly notifications: NotificationsService) {}
+  @Get('unread-count')
+  unreadCount(@Req() req: AuthenticatedRequest, @Query() query: unknown) {
+    const input = parseInput(z.object({ entityId: z.uuid() }).strict(), query)
+    return this.notifications.unreadCount(req.authSession.user.id, input.entityId)
+  }
   @Get()
   list(@Req() req: AuthenticatedRequest, @Query() query: unknown) {
     const input = parseInput(entityPageSchema, query)

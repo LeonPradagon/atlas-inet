@@ -31,6 +31,8 @@ GEOCODING_DATASET_VERSION=photon-indonesia:sha256:<SHA-256-dump-yang-benar>
 
 Jangan aktifkan `GEOCODING_INTERNAL_URL` bersama `PHOTON_INTERNAL_URL`; konfigurasi ditolak. Adapter lama dipertahankan untuk kompatibilitas. Tidak ada fallback publik.
 
+Untuk **development individual saja**, `PHOTON_PUBLIC_DEV_URL=https://photon.komoot.io` mengaktifkan Photon publik Komoot. Opsi ini ditolak saat `NODE_ENV=production`, tidak boleh digabung dengan provider lain, dan sengaja tidak dipakai job bulk maupun lookup import. Query individual mengirim alamat ke internet; gunakan alamat sintetis/non-customer. Photon menyatakan penggunaan ekstensif dapat di-throttle dan tidak menjamin availability. Hasil menandai provider `PHOTON_PUBLIC_DEV` dan atribusi OpenStreetMap. Jangan memakai endpoint publik ini untuk SIT/UAT ber-volume atau produksi; gunakan instance Photon self-hosted.
+
 ```powershell
 npm run dev:backend
 # Terminal lain, setelah kompilasi/API listening selesai:
@@ -47,8 +49,8 @@ Health: `http://127.0.0.1:2322/status`. Photon bind loopback 2322; OpenSearch em
 
 1. Login, pilih entitas berizin, buka **Analisis**, pilih **Alamat**, isi alamat lengkap. Native query dibatasi Indonesia/maksimal 5 kandidat; timeout 5 detik, response 1 MB, redirect ditolak.
 2. Kandidat ambigu atau satu titik tanpa house number tetap memerlukan konfirmasi. Tidak diam-diam memakai titik kota/jalan sebagai alamat tepat. Photon tidak memiliki confidence score terkalibrasi. Label/precision bukan sertifikasi lokasi; `needsSurvey` selalu true.
-3. **Bulk**: sheet `Input`, kolom `reference_id`, `customer_name`, `address`, `latitude`, `longitude`, `notes`, optional UUID `connection_point_id`. Template lama tetap valid. Alamat saja valid; koordinat lengkap bypass geocoding. Titik sambung harus ODC/ODP terhubung ke nearest segment.
-4. Setujui proses setelah preview. Download Results/Errors/Summary memuat koordinat hasil, provider/versi, kandidat ambigu, status rute dan estimasi yang tersedia. Koreksi ambigu: salin kolom input yang didukung ke sheet `Input` baru, isi koordinat kandidat yang telah diverifikasi. Results dengan semua kolom output bukan template upload.
+3. **Bulk**: unggah KML/KMZ dengan satu Point atau address-only Placemark per lokasi. `ExtendedData` dapat menyediakan `reference_id`, `customer_name`, `address`, `notes`, optional UUID `connection_point_id` bersama `connection_point_type` (`ODC`/`ODP`). Point bypass geocoding; alamat saja diproses melalui provider internal.
+4. Setujui proses setelah preview. Download Results/Errors/Summary sebagai XLSX memuat koordinat hasil, provider/versi, kandidat ambigu, status rute dan estimasi yang tersedia. Kandidat alamat ambigu dapat diverifikasi lalu dikirim ulang sebagai Placemark Point berkoordinat eksplisit di KML/KMZ baru.
 5. **Import aset titik**: sheet `Assets`, NODE/POLE/ODC/ODP boleh memakai `address` tanpa geometry. Klik **Cari koordinat** per baris lalu **Konfirmasi kandidat**. Lookup sendiri belum menyelesaikan row/publish. Lookup stale/index invalid ditolak. POLE tetap wajib tinggi 7/9 m. Error UI dipaginasi 25 baris/halaman.
 6. KML tanpa geometry boleh memakai `<address>` dengan kind/ID/code eksplisit; mapping kind tetap wajib. Geometry/koordinat existing tidak di-geocode. Geometry invalid tidak diganti diam-diam lewat alamat.
 

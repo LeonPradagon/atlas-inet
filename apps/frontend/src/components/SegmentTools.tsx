@@ -10,7 +10,22 @@ export function SegmentPicker({ value, onChange }: { value: string; onChange: (i
   const { entity, user, can } = useEntityScope()
   const [page, setPage] = useState(1)
   const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segments', page), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal), enabled: Boolean(entity) && can('network.read') })
-  return <div className="mb-3"><Field label="ID segmen jaringan" name="segment-id" value={value} onChange={onChange} />{can('network.read') && <details><summary>Pilih dari segmen terotorisasi</summary><QueryState query={query} empty={query.data?.data.length === 0}><ul className="list-group mt-2">{query.data?.data.map((segment) => <li className="list-group-item" key={segment.id}><button className="btn btn-link text-start p-0" type="button" onClick={() => onChange(segment.id)}>{segment.segmentCode} · {segment.cableName}</button> <small>{segment.status}</small></li>)}</ul></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} /></details>}</div>
+  if (!can('network.read')) return <div className="mb-3"><Field label="ID segmen jaringan" name="segment-id" value={value} onChange={onChange} /><p className="form-text">Minta ID segmen dari tim jaringan jika daftar segmen tidak tersedia.</p></div>
+  return <div className="mb-3">
+    <label className="form-label" htmlFor="segment-picker">1. Pilih segmen jaringan</label>
+    {query.data?.data.length === 0 ? <div className="alert alert-warning py-2 mb-2" role="status">Belum ada segmen jaringan di entitas ini. Impor KML/KMZ berisi LineString melalui Aset &amp; Impor Jaringan sebelum membuat booking.</div> : <QueryState query={query}>
+      <select id="segment-picker" className="form-select" value={value} required onChange={(event) => onChange(event.target.value)}>
+        <option value="">Pilih kode kabel / segmen…</option>
+        {query.data?.data.map((segment) => <option key={segment.id} value={segment.id}>
+          {segment.segmentCode} · {segment.cableName} · Tersedia: {segment.capacity.available == null ? 'belum diketahui' : `${segment.capacity.available} core`}
+        </option>)}
+      </select>
+    </QueryState>}
+    {query.data?.data.length ? <>
+      <p className="form-text mb-1">Menampilkan {query.data.data.length} segmen. Kapasitas diambil dari data tervalidasi.</p>
+      <Pagination page={page} meta={query.data.meta} setPage={setPage} />
+    </> : null}
+  </div>
 }
 export function SegmentDetail({ id, editable = false }: { id: string; editable?: boolean }) {
   const { entity, user, can } = useEntityScope()

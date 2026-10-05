@@ -4,16 +4,13 @@ import type { Response } from 'express'
 import { z } from 'zod'
 import { entityPageSchema, parseInput } from '../../common/domain-input.js'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
-import { spreadsheet,uploadLimits,validateUpload,type UploadFile } from '../files/tabular-files.js'
-import { bulkColumns } from './bulk-parser.js'
+import { uploadLimits,validateUpload,type UploadFile } from '../files/tabular-files.js'
 import { JobsService } from './jobs.service.js'
 const rowQuery = entityPageSchema.omit({ entityId:true })
 @Controller()
 @UseGuards(AuthSessionGuard)
 export class JobsController {
   constructor(private readonly jobs: JobsService) {}
-  @Get('analysis/template')
-  async template(@Res() response: Response) { response.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment('atlas-analysis.xlsx').send(await spreadsheet([{ name:'Input',columns:bulkColumns,rows:[] }])) }
   @Post('analysis/uploads')
   @UseInterceptors(FileInterceptor('file',{ limits:uploadLimits }))
   upload(@Req() req: AuthenticatedRequest,@Body() body: unknown,@UploadedFile() file: UploadFile | undefined) {

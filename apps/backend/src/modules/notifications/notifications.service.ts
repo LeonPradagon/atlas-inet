@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, isNull, sql } from 'drizzle-orm'
 import { DatabaseService } from '../../database/database.service.js'
 import { notifications, outboxEvents } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
@@ -13,6 +13,12 @@ export class NotificationsService {
     const data = await this.database.db.select().from(notifications).where(where).orderBy(desc(notifications.createdAt), desc(notifications.id)).limit(pageSize).offset((page - 1) * pageSize)
     const [{ total }] = await this.database.db.select({ total: sql<number>`count(*)::int` }).from(notifications).where(where)
     return { data, meta: { page, pageSize, total } }
+  }
+  async unreadCount(userId: string, entityId: string) {
+    await this.access.requireEntityPermission(userId, entityId, 'notifications.read')
+    const [{ count }] = await this.database.db.select({ count: sql<number>`count(*)::int` }).from(notifications)
+      .where(and(eq(notifications.recipientId, userId), eq(notifications.entityId, entityId), isNull(notifications.readAt)))
+    return { data: count }
   }
   async markRead(userId: string, id: string) {
     const [record] = await this.database.db.select().from(notifications).where(and(eq(notifications.id, id), eq(notifications.recipientId, userId)))

@@ -10,9 +10,9 @@ Status 3 Oktober 2026: UI terhubung ke kontrak backend melalui katalog `API_ENDP
 | Dashboard | Summary seluruh entitas dari backend; kapasitas unknown tetap ditampilkan sebagai belum diketahui |
 | Peta | GeoJSON viewport/pagination, layer ODC/ODP/tiang/segmen terpisah, style Liberty/Bright/3D, pencarian fitur termuat, popup dan detail segmen |
 | Analisis | Alamat/koordinat, pilihan kandidat geocoding, ID titik sambung opsional, hasil/rute/meter hanya dari API, histori pribadi |
-| Bulk Excel | Template, upload/preview, persetujuan baris valid, polling job, cancel, retry kegagalan sementara dan download XLSX |
+| Bulk analysis | KML/KMZ upload/preview, point markers, persetujuan baris valid, polling job, cancel, retry kegagalan sementara dan download XLSX |
 | Booking / waiting list | Form PIC lengkap, ID segmen/picker paginated, kapasitas, idempotent create, filter status, release/Used/deallocation, promosi/cancel manual |
-| Aset | Template KML/XLSX, source identity/mapping, staging/preview, alamat-only titik dengan lookup/konfirmasi kandidat sebelum publish, daftar segmen, edit metadata If-Match, histori nama dan master tipe kabel immutable |
+| Aset | KML/KMZ source identity/mapping, staging/preview, alamat-only titik dengan lookup/konfirmasi kandidat sebelum publish, daftar segmen, edit metadata If-Match, histori nama dan master tipe kabel immutable |
 | Monitoring | Snapshot as-of, tabel kapasitas/antrean paginated, export async melalui worker dan download hasil |
 | Notifikasi / audit | Notifikasi sendiri, mark-read API, filter unread halaman, audit entitas paginated |
 | Pengaturan | Booking/naming/analysis policy versioned; submit pending, independent approve/reject/cancel, comparison/history dan alasan wajib; konflik versi tanpa klaim aktif |

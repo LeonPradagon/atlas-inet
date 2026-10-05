@@ -161,7 +161,7 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
     const viewport = `entityId=${alpha.entityId}&bbox=106.81,-6.3,106.89,-6.1`
 
     await t.test('all network endpoints require an authenticated session', async () => {
-      for (const path of [`/segments?${viewport}`, `/segments/${main.id}`, `/map?${viewport}`]) assert.equal((await get(path, '')).status, 401)
+      for (const path of [`/segments?${viewport}`, `/segments/${main.id}`, `/map?${viewport}`, `/search?entityId=${alpha.entityId}&q=ODC1`]) assert.equal((await get(path, '')).status, 401)
     })
     await t.test('viewport list is filtered, clipped and stably paginated with correct totals', async () => {
       const response = await get(`/segments?${viewport}&pageSize=2`)
@@ -178,6 +178,23 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       assert.equal(last.meta.total, 4)
       const inactive = await (await get(`/segments?${viewport}&status=INACTIVE`)).json()
       assert.deepEqual(inactive.data.map((row) => row.segmentCode), ['DDD-INACTIVE'])
+    })
+    await t.test('entity-wide search finds cables, segments and assets outside viewport without leaking other entities', async () => {
+      const segmentSearch = await get(`/search?entityId=${alpha.entityId}&q=AAA-MAIN`)
+      assert.equal(segmentSearch.status, 200)
+      const segmentResult = await segmentSearch.json()
+      assert.equal(segmentResult.meta.total, 1)
+      assert.equal(segmentResult.data[0].properties.segmentCode, 'AAA-MAIN')
+      assert.deepEqual(segmentResult.data[0].geometry.coordinates, [[106.8, -6.2], [106.9, -6.2]])
+
+      const assetSearch = await get(`/search?entityId=${alpha.entityId}&q=ODC1`)
+      const assetResult = await assetSearch.json()
+      assert.equal(assetResult.data.length, 1)
+      assert.equal(assetResult.data[0].properties.layer, 'odc')
+      assert.equal(assetResult.data[0].properties.name, 'ODC1')
+      assert.equal((await get(`/search?entityId=${beta.entityId}&q=B-SECRET`)).status, 403)
+      assert.deepEqual((await (await get(`/search?entityId=${alpha.entityId}&q=DRAFT`)).json()).data, [])
+      for (const query of [`entityId=${alpha.entityId}&q=x`, `entityId=${alpha.entityId}&q=valid&extra=1`]) assert.equal((await get(`/search?${query}`)).status, 400)
     })
     await t.test('detail exposes full geometry, direction, provenance and distinct pole/ODC/ODP relations', async () => {
       const response = await get(`/segments/${main.id}`)

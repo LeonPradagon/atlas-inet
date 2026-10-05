@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common'
 import ExcelJS from 'exceljs'
 import yauzl from 'yauzl'
+import { XMLParser, XMLValidator } from 'fast-xml-parser'
 
 export interface UploadFile { originalname: string; mimetype: string; buffer: Buffer; size: number }
 export const uploadLimits = { fileSize: 20 * 1024 * 1024, files: 1, fields: 8, fieldSize: 512 * 1024 }
@@ -54,8 +55,78 @@ async function inspectArchive(buffer: Buffer): Promise<void> {
 export function validateUpload(file: UploadFile | undefined): UploadFile {
   if (!file || !file.buffer?.length || file.buffer.length > uploadLimits.fileSize) throw new BadRequestException('A file of at most 20 MB is required')
   if (file.originalname.length > 200 || /[\x00-\x1f]/.test(file.originalname)) throw new BadRequestException('Invalid upload filename')
-  if (!/\.(xlsx|kml)$/i.test(file.originalname)) throw new BadRequestException('Only .xlsx or .kml files are supported')
+  if (!/\.(kml|kmz)$/i.test(file.originalname)) throw new BadRequestException('Only .kml or .kmz upload files are supported')
   return file
+}
+
+async function extractKmzKml(buffer: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buffer, { lazyEntries: true, validateEntrySizes: true }, (error, zip) => {
+      if (error || !zip) return reject(new BadRequestException('Invalid KMZ archive'))
+      let count = 0
+      let expanded = 0
+      let kml: Buffer | null = null
+      let settled = false
+      const names = new Set<string>()
+      const fail = (message = 'Unsafe or oversized KMZ archive') => {
+        if (settled) return
+        settled = true
+        zip.close()
+        reject(new BadRequestException(message))
+      }
+      zip.on('error', () => fail('Invalid KMZ archive'))
+      zip.on('end', () => {
+        if (settled) return
+        settled = true
+        if (!kml) reject(new BadRequestException('KMZ must contain exactly one KML document'))
+        else resolve(kml)
+      })
+      zip.on('entry', (entry: yauzl.Entry) => {
+        count++
+        expanded += entry.uncompressedSize
+        const pathParts = entry.fileName.split(/[\\/]+/)
+        if (count > 512 || expanded > 64 * 1024 * 1024 || entry.uncompressedSize > 32 * 1024 * 1024
+          || entry.isEncrypted() || entry.fileName.startsWith('/') || /^[a-z]:/i.test(entry.fileName)
+          || pathParts.includes('..') || names.has(entry.fileName)) return fail()
+        names.add(entry.fileName)
+        if (!/\.kml$/i.test(entry.fileName)) return zip.readEntry()
+        if (kml) return fail('KMZ must contain exactly one KML document')
+        zip.openReadStream(entry, (streamError, stream) => {
+          if (streamError || !stream) return fail('Cannot read KML document inside KMZ')
+          const chunks: Buffer[] = []
+          let size = 0
+          stream.on('error', () => fail('Cannot read KML document inside KMZ'))
+          stream.on('data', (chunk: Buffer) => {
+            size += chunk.length
+            if (size > 32 * 1024 * 1024) { stream.destroy(); fail() }
+            else chunks.push(chunk)
+          })
+          stream.on('end', () => {
+            if (settled) return
+            kml = Buffer.concat(chunks)
+            zip.readEntry()
+          })
+        })
+      })
+      zip.readEntry()
+    })
+  })
+}
+
+export async function readKmlDocument(file: UploadFile): Promise<Record<string, unknown>> {
+  const isKmz = /\.kmz$/i.test(file.originalname)
+  const allowedTypes = isKmz
+    ? ['application/vnd.google-earth.kmz', 'application/zip', 'application/octet-stream']
+    : ['application/vnd.google-earth.kml+xml', 'application/xml', 'text/xml', 'application/octet-stream']
+  if (!allowedTypes.includes(file.mimetype)) throw new BadRequestException(`Invalid ${isKmz ? 'KMZ' : 'KML'} content type`)
+  let buffer = file.buffer
+  if (isKmz) buffer = await extractKmzKml(buffer)
+  if (buffer.length > 32 * 1024 * 1024) throw new BadRequestException('KML document exceeds 32 MB')
+  let text: string
+  try { text = new TextDecoder('utf8', { fatal: true }).decode(buffer) } catch { throw new BadRequestException('KML must be UTF-8') }
+  if (/<!\s*(DOCTYPE|ENTITY)\b|\u0000/i.test(text) || XMLValidator.validate(text) !== true) throw new BadRequestException('Unsafe or invalid KML XML')
+  try { return new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, parseTagValue: false, processEntities: false }).parse(text) as Record<string, unknown> }
+  catch { throw new BadRequestException('Cannot parse KML document') }
 }
 
 export async function readWorkbook(file: UploadFile, sheetName: string) {

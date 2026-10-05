@@ -20,6 +20,7 @@ npm run access:grant -- --email operator@example.com --entity-code ENTITY_CODE -
 | `GET /api/v1/network/segments` | List segmen terotorisasi yang berpotongan dengan viewport, geometry dipotong untuk tampilan |
 | `GET /api/v1/network/segments/:id` | Detail segmen dengan geometry asli, topology IDs/nodes, kabel, kapasitas installed, provenance dan relasi aset |
 | `GET /api/v1/network/map` | GeoJSON FeatureCollection untuk segmen, tiang, ODC dan ODP dalam viewport |
+| `GET /api/v1/network/search` | Cari nama/kode segmen/kabel dan kode tiang/ODC/ODP pada seluruh dataset published entitas; hasil GeoJSON siap untuk navigasi peta |
 
 List/map hanya membaca dataset `PUBLISHED`. `DRAFT` dan `ARCHIVED` tidak ditampilkan. Import/publish kini tersedia melalui domain import; lihat `docs/operations-api.md`. Tidak ada dataset contoh yang ditambahkan oleh migrasi.
 
@@ -35,6 +36,10 @@ List/map hanya membaca dataset `PUBLISHED`. `DRAFT` dan `ARCHIVED` tidak ditampi
 | `layers` | Map saja: daftar dipisahkan koma, `segments,poles,odc,odp`; default semua, duplikat dihapus |
 
 Parameter lain ditolak. Viewport yang melintasi antimeridian harus dibagi menjadi dua request; bbox terbalik tidak dianggap sebagai wrap. Polygon viewport bukan kontrak endpoint ini.
+
+### Query pencarian
+
+`GET /api/v1/network/search?entityId=<UUID>&q=<teks>&limit=15` menerima `q` 2–120 karakter dan `limit` 1–25 (default 15). Pencarian mencakup `segmentCode`, `cableName`, serta kode pole/ODC/ODP yang berada pada dataset published di entitas tersebut. Hasil diurutkan exact/prefix match dahulu; wildcard `%` dan `_` diperlakukan sebagai teks biasa. Respons berisi GeoJSON FeatureCollection-style features dengan geometry canonical, `matchType`, dan total hasil. Tidak memerlukan bbox, jadi dapat menemukan aset di luar viewport saat ini. Client memilih hasil untuk menggeser peta ke geometry. Alamat customer bukan target pencarian ini.
 
 Contoh URL (ganti `<entity UUID>` dengan grant nyata):
 

@@ -9,6 +9,10 @@ export class AccessService {
     return this.repository.findUserAccess(userId)
   }
 
+  findPresalesUsers(entityId: string) {
+    return this.repository.findPresalesUsers(entityId)
+  }
+
   async requireEntityPermission(userId: string, entityId: string, permission: string) {
     const access = await this.getUserAccess(userId)
     const entity = access.find((item) => item.id === entityId && item.permissions.includes(permission))

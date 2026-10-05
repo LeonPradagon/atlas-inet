@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common'
 import { sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import { DatabaseService } from '../../database/database.service.js'
-import type { BBox, MapQuery, SegmentsQuery } from './network.dto.js'
+import type { BBox, MapQuery, NetworkSearchQuery, SegmentsQuery } from './network.dto.js'
 
 export interface SegmentRecord {
   id: string
@@ -114,6 +114,15 @@ export class NetworkRepository {
       odp: sql`SELECT p.id, p.owner_entity_id, p.dataset_id, p.code AS name, 'odp'::text AS layer,
         p.geometry, '{}'::jsonb AS extra
         FROM odps p WHERE p.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(p.geometry, ${bounds})`,
+      areas: sql`SELECT a.id, a.owner_entity_id, a.dataset_id, a.name, 'areas'::text AS layer,
+        ST_CollectionExtract(ST_Intersection(a.geometry, ${bounds}), 3) AS geometry,
+        jsonb_build_object('areaCode', a.code, 'referenceOnly', true, 'attributes', a.properties) AS extra
+        FROM reference_areas a WHERE a.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(a.geometry, ${bounds})`,
+      references: sql`SELECT r.id, r.owner_entity_id, r.dataset_id, r.name, 'references'::text AS layer,
+        CASE WHEN ST_GeometryType(r.geometry) = 'ST_Point' THEN r.geometry
+          ELSE ST_CollectionExtract(ST_Intersection(r.geometry, ${bounds}), 2) END AS geometry,
+        jsonb_build_object('referenceOnly', true, 'operationalAsset', false, 'attributes', r.properties) AS extra
+        FROM reference_features r WHERE r.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(r.geometry, ${bounds})`,
     }
     const result = await this.database.db.execute<{ features: unknown[]; total: number }>(sql`
       WITH candidates AS (${sql.join(query.layers.map((layer) => layerQueries[layer]), sql` UNION ALL `)}), matches AS (
@@ -129,5 +138,41 @@ export class NetworkRepository {
           'ownerEntityId', owner_entity_id, 'datasetId', dataset_id, 'datasetVersion', dataset_version) || extra) ORDER BY layer, id) FROM page), '[]'::jsonb) AS features,
         (SELECT count(*)::int FROM matches) AS total`)
     return result.rows[0]
+  }
+
+  async search(query: NetworkSearchQuery) {
+    const escaped = query.q.replace(/[!%_]/g, '!$&')
+    const pattern = `%${escaped}%`
+    const result = await this.database.db.execute<{ data: unknown[]; total: number }>(sql`
+      WITH candidates AS (
+        SELECT s.id::text AS id, s.cable_name AS name, 'segments'::text AS layer,
+          s.segment_code AS segment_code, s.geometry,
+          CASE WHEN lower(s.segment_code)=lower(${query.q}) THEN 0 WHEN lower(s.segment_code) LIKE lower(${query.q} || '%') THEN 1 ELSE 2 END AS rank
+        FROM network_segments s JOIN network_datasets d ON d.id=s.dataset_id AND d.owner_entity_id=s.owner_entity_id
+        WHERE s.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED'
+          AND (s.segment_code ILIKE ${pattern} ESCAPE '!' OR s.cable_name ILIKE ${pattern} ESCAPE '!')
+        UNION ALL
+        SELECT p.id::text, p.code, 'poles'::text, NULL::text, p.geometry, 3
+        FROM poles p JOIN network_datasets d ON d.id=p.dataset_id AND d.owner_entity_id=p.owner_entity_id
+        WHERE p.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED' AND p.code ILIKE ${pattern} ESCAPE '!'
+        UNION ALL
+        SELECT p.id::text, p.code, 'odc'::text, NULL::text, p.geometry, 3
+        FROM odcs p JOIN network_datasets d ON d.id=p.dataset_id AND d.owner_entity_id=p.owner_entity_id
+        WHERE p.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED' AND p.code ILIKE ${pattern} ESCAPE '!'
+        UNION ALL
+        SELECT p.id::text, p.code, 'odp'::text, NULL::text, p.geometry, 3
+        FROM odps p JOIN network_datasets d ON d.id=p.dataset_id AND d.owner_entity_id=p.owner_entity_id
+        WHERE p.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED' AND p.code ILIKE ${pattern} ESCAPE '!'
+      ), ranked AS (
+        SELECT *, count(*) OVER()::int AS total FROM candidates
+        ORDER BY rank, name, layer, id LIMIT ${query.limit}
+      )
+      SELECT COALESCE((SELECT jsonb_agg(jsonb_build_object('type','Feature','id',layer || ':' || id,
+        'geometry',ST_AsGeoJSON(geometry,15)::jsonb,
+        'properties',jsonb_build_object('id',id,'name',name,'layer',layer,'segmentCode',segment_code,
+          'matchType',CASE WHEN layer='segments' AND segment_code ILIKE ${pattern} ESCAPE '!' THEN 'segment' WHEN layer='segments' THEN 'cable' ELSE 'asset' END)
+      ) ORDER BY rank,name,layer,id) FROM ranked),'[]'::jsonb) AS data,
+        (SELECT count(*)::int FROM candidates) AS total`)
+    return result.rows[0] ?? { data: [], total: 0 }
   }
 }

@@ -10,6 +10,11 @@ const originSchema = z.string().url().refine((value) => {
 }, 'Expected an HTTP(S) origin without a path')
 const internalUrlSchema = z.preprocess((value) => value === '' ? undefined : value,
   z.string().url().refine((value) => ['http:', 'https:'].includes(new URL(value).protocol)).optional())
+const photonPublicDevUrlSchema = z.preprocess((value) => value === '' ? undefined : value,
+  z.string().url().refine((value) => {
+    const url = new URL(value)
+    return url.protocol === 'https:' && url.hostname === 'photon.komoot.io' && url.pathname === '/' && !url.search && !url.hash
+  }, 'Public development geocoder must use https://photon.komoot.io').optional())
 
 const AppConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -28,10 +33,16 @@ const AppConfigSchema = z.object({
   FILE_STORAGE_PATH: z.string().min(1).default('./var/files'),
   GEOCODING_INTERNAL_URL: internalUrlSchema,
   PHOTON_INTERNAL_URL: internalUrlSchema,
+  PHOTON_PUBLIC_DEV_URL: photonPublicDevUrlSchema,
   GEOCODING_DATASET_VERSION: z.string().trim().min(1).max(200).optional(),
   ROUTING_INTERNAL_URL: internalUrlSchema,
   WORKER_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1000),
-}).refine((env) => !(env.GEOCODING_INTERNAL_URL && env.PHOTON_INTERNAL_URL), 'Choose one internal geocoding provider').transform((env) => ({
+}).refine((env) => {
+  const photonCount = Number(Boolean(env.PHOTON_INTERNAL_URL)) + Number(Boolean(env.PHOTON_PUBLIC_DEV_URL))
+  return photonCount <= 1
+    && !(env.GEOCODING_INTERNAL_URL && photonCount > 0)
+    && (!env.PHOTON_PUBLIC_DEV_URL || env.NODE_ENV === 'development')
+}, 'Choose one geocoder; public Photon is restricted to development').transform((env) => ({
   nodeEnv: env.NODE_ENV,
   port: env.PORT,
   trustProxyHops: env.TRUST_PROXY_HOPS,
@@ -44,6 +55,7 @@ const AppConfigSchema = z.object({
   fileStoragePath: env.FILE_STORAGE_PATH,
   geocodingInternalUrl: env.GEOCODING_INTERNAL_URL,
   photonInternalUrl: env.PHOTON_INTERNAL_URL,
+  photonPublicDevUrl: env.PHOTON_PUBLIC_DEV_URL,
   geocodingDatasetVersion: env.GEOCODING_DATASET_VERSION,
   routingInternalUrl: env.ROUTING_INTERNAL_URL,
   workerIntervalMs: env.WORKER_INTERVAL_MS,

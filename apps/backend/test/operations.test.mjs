@@ -256,8 +256,11 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const notifications=await data(await request(`notifications?entityId=${alpha.entityId}`))
       const notification=notifications.find((n) => n.payload.resourceId===b.id)
       assert.ok(notification)
+      const unreadBefore=await data(await request(`notifications/unread-count?entityId=${alpha.entityId}`))
+      assert.ok(unreadBefore >= 1)
       assert.equal((await request(`notifications/${notification.id}/read`,'POST',undefined,{},bCookie)).status,404)
       await data(await request(`notifications/${notification.id}/read`,'POST'),201)
+      assert.equal(await data(await request(`notifications/unread-count?entityId=${alpha.entityId}`)),unreadBefore-1)
     })
     await t.test('nearest uses full canonical line geography; absent dependencies remain explicit',async () => {
       const result=await data(await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.201,longitude:106.85 }))
@@ -315,54 +318,76 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       assert.equal((await request(`imports/${invalid.id}/publish`,'POST',{ version:'bad' })).status,422)
       assert.equal((await upload('imports','bad.exe',Buffer.from('not-kml'),fields)).status,400)
     })
+    await t.test('valid KML references publish automatically without operationalizing unmapped assets',async () => {
+      const xml=Buffer.from('<kml><Document><Placemark id="district-1"><name>Reference District</name><Polygon><outerBoundaryIs><LinearRing><coordinates>106.8,-6.2 106.9,-6.2 106.9,-6.3 106.8,-6.3 106.8,-6.2</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark><Placemark id="unmapped-point"><name>Unmapped asset</name><ExtendedData><Data name="treeId"><value>placemark-xhr9wha03</value></Data></ExtendedData><Point><coordinates>106.85,-6.25</coordinates></Point></Placemark></Document></kml>')
+      const preview=await data(await upload('imports','district.kml',xml,{ entityId:alpha.entityId,sourceSystem:'reference-areas' }),201)
+      assert.equal(preview.rows.length,0);assert.equal(preview.areas.length,1);assert.equal(preview.referenceFeatures.length,1);assert.equal(preview.errors.length,0)
+      assert.ok(preview.areasPublishedAt);assert.ok(preview.datasetId)
+      assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'areas-v1' })).status,422)
+      const replay=await data(await request(`imports/${preview.id}/publish-areas`,'POST',{ version:'manual-replay' }),201)
+      assert.equal(replay.datasetId,preview.datasetId)
+      const stored=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_areas WHERE external_id='district-1'")).rows[0]
+      assert.equal(stored.name,'Reference District');assert.equal(stored.type,'ST_Polygon')
+      const storedFeature=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_features WHERE external_id='placemark-2'")).rows[0]
+      assert.equal(storedFeature.name,'Unmapped asset');assert.equal(storedFeature.type,'ST_Point')
+      const map=await data(await request(`network/map?entityId=${alpha.entityId}&bbox=106.7,-6.4,107,-6.1&layers=areas,references`),200)
+      assert.ok(map.features.length>=2)
+      assert.ok(map.features.some((feature)=>feature.properties.layer==='areas' && feature.properties.name==='Reference District'))
+      assert.ok(map.features.some((feature)=>feature.properties.layer==='references' && feature.properties.name==='Unmapped asset'))
+      assert.ok(map.features.every((feature)=>feature.properties.referenceOnly))
+      assert.equal(map.features.find((feature)=>feature.properties.layer==='areas').geometry.type,'Polygon')
+      const mappedReference=map.features.find((feature)=>feature.properties.layer==='references' && feature.properties.name==='Unmapped asset')
+      assert.equal(mappedReference.geometry.type,'Point')
+      assert.equal(mappedReference.properties.attributes.treeId,'placemark-xhr9wha03')
+    })
     let bulkJob
     await t.test('address-only asset import requires owner-authorized lookup and explicit candidate confirmation before publish',async () => {
       const adapters=app.get(InternalAdapters),originalGeocode=adapters.geocode
       let calls=0
       adapters.geocode=async (address) => { calls++;assert.equal(address,'Synthetic address');return { status:'AMBIGUOUS_ADDRESS',candidates:[{ latitude:-6.21,longitude:106.84,label:'Synthetic candidate',precision:'house' }],provider:'TEST_INTERNAL',datasetVersion:'synthetic-v1' } }
       try {
-        const buffer=await spreadsheet([{ name:'Assets',columns:['kind','external_id','code','address'],rows:[{ kind:'NODE',external_id:'address-node',code:'ADDRESS-NODE',address:'Synthetic address' }] }])
-        const preview=await data(await upload('imports','address.xlsx',buffer,{ entityId:alpha.entityId,sourceSystem:'address-test' }),201)
+        const buffer=Buffer.from('<kml><Document><Placemark id="address-node"><name>ADDRESS-NODE</name><address>Synthetic address</address><ExtendedData><Data name="kind"><value>NODE</value></Data></ExtendedData></Placemark></Document></kml>')
+        const preview=await data(await upload('imports','address.kml',buffer,{ entityId:alpha.entityId,sourceSystem:'address-test' }),201)
         assert.equal(preview.rows.length,0);assert.equal(preview.errors[0].code,'ADDRESS_NEEDS_GEOCODING')
         assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' })).status,422)
-        assert.equal((await request(`imports/${preview.id}/rows/2/geocode`,'POST',undefined,{},bCookie)).status,404)
+        assert.equal((await request(`imports/${preview.id}/rows/1/geocode`,'POST',undefined,{},bCookie)).status,404)
         assert.equal(calls,0)
-        const first=await data(await request(`imports/${preview.id}/rows/2/geocode`,'POST'),201)
+        const first=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
         assert.equal(first.rows.length,0);assert.equal(first.errors[0].candidates.length,1)
         assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' })).status,422)
-        const second=await data(await request(`imports/${preview.id}/rows/2/geocode`,'POST'),201)
+        const second=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
         assert.notEqual(first.errors[0].lookupId,second.errors[0].lookupId)
         const body={ lookupId:second.errors[0].lookupId,candidateIndex:0 }
-        assert.equal((await request(`imports/${preview.id}/rows/2/confirm-coordinates`,'POST',{ ...body,lookupId:first.errors[0].lookupId })).status,409)
-        assert.equal((await request(`imports/${preview.id}/rows/2/confirm-coordinates`,'POST',{ ...body,candidateIndex:1 })).status,422)
-        const confirmed=await data(await request(`imports/${preview.id}/rows/2/confirm-coordinates`,'POST',body),201)
+        assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',{ ...body,lookupId:first.errors[0].lookupId })).status,409)
+        assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',{ ...body,candidateIndex:1 })).status,422)
+        const confirmed=await data(await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',body),201)
         assert.deepEqual(confirmed.errors,[]);assert.deepEqual(confirmed.rows[0].geometry,{ type:'Point',coordinates:[106.84,-6.21] })
         assert.equal(confirmed.rows[0].geocoding.confirmedBy,alice.user.id)
         assert.equal(confirmed.rows[0].geocoding.datasetVersion,'synthetic-v1')
         await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' }),201)
-        assert.equal((await request(`imports/${preview.id}/rows/2/geocode`,'POST')).status,409)
-        assert.equal((await request(`imports/${preview.id}/rows/2/confirm-coordinates`,'POST',body)).status,409)
+        assert.equal((await request(`imports/${preview.id}/rows/1/geocode`,'POST')).status,409)
+        assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',body)).status,409)
         assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='IMPORT_COORDINATES_CONFIRMED'",[preview.id])).rows[0].n,1)
         assert.equal((await pool.query("SELECT count(*)::int AS n FROM network_nodes WHERE external_id='address-node'")).rows[0].n,1)
       } finally { adapters.geocode=originalGeocode }
     })
     await t.test('failed geocoding leaves import unresolved and never stages fabricated coordinates',async () => {
-      const buffer=await spreadsheet([{ name:'Assets',columns:['kind','external_id','code','address'],rows:[{ kind:'ODP',external_id:'not-found',code:'NOT-FOUND',address:'No configured provider' }] }])
-      const preview=await data(await upload('imports','missing.xlsx',buffer,{ entityId:alpha.entityId,sourceSystem:'missing-geocode' }),201)
-      const result=await data(await request(`imports/${preview.id}/rows/2/geocode`,'POST'),201)
+      const buffer=Buffer.from('<kml><Document><Placemark id="not-found"><name>NOT-FOUND</name><address>No configured provider</address><ExtendedData><Data name="kind"><value>ODP</value></Data></ExtendedData></Placemark></Document></kml>')
+      const preview=await data(await upload('imports','missing.kml',buffer,{ entityId:alpha.entityId,sourceSystem:'missing-geocode' }),201)
+      const result=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
       assert.equal(result.errors[0].code,'GEOCODING_NOT_CONFIGURED');assert.equal(result.rows.length,0)
       assert.deepEqual(result.errors[0].candidates,[])
       assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'missing-v1' })).status,422)
-      assert.equal((await request(`imports/${preview.id}/rows/2/confirm-coordinates`,'POST',{ lookupId:result.errors[0].lookupId,candidateIndex:0 })).status,422)
+      assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',{ lookupId:result.errors[0].lookupId,candidateIndex:0 })).status,422)
     })
-    await t.test('bulk Excel preview validates per row; job requires approval and resumes from durable checkpoints',async () => {
-      const buffer=await spreadsheet([{ name:'Input',columns:['reference_id','address','latitude','longitude','notes'],rows:[
-        { reference_id:'GOOD',latitude:-6.201,longitude:106.85,notes:'=1+1' },
-        { reference_id:'BAD',latitude:91,longitude:106.85 },
-        { reference_id:'GOOD',latitude:-6.2,longitude:106.8 },
-        { reference_id:'ADDRESS',address:'Provider missing' },
-      ] }])
-      const response=await upload('analysis/uploads','input.xlsx',buffer,{ entityId:alpha.entityId })
+    await t.test('bulk KML preview validates point placemarks; job requires approval and resumes from durable checkpoints',async () => {
+      const buffer=Buffer.from(`<kml><Document>
+        <Placemark><name>GOOD</name><Point><coordinates>106.85,-6.201</coordinates></Point><ExtendedData><Data name="notes"><value>=1+1</value></Data></ExtendedData></Placemark>
+        <Placemark><name>BAD</name><Point><coordinates>106.85,91</coordinates></Point></Placemark>
+        <Placemark><name>GOOD</name><Point><coordinates>106.8,-6.2</coordinates></Point></Placemark>
+        <Placemark><name>ADDRESS</name><address>Provider missing</address></Placemark>
+      </Document></kml>`)
+      const response=await upload('analysis/uploads','input.kml',buffer,{ entityId:alpha.entityId })
       const json=await response.json();assert.equal(response.status,201,JSON.stringify(json));assert.equal(json.meta.valid,2);assert.equal(json.meta.invalid,2)
       assert.equal((await request('analysis/jobs','POST',{ uploadId:json.data.id,processValidRows:false })).status,409)
       bulkJob=await data(await request('analysis/jobs','POST',{ uploadId:json.data.id,processValidRows:true }),202)
@@ -404,22 +429,20 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const audit=await data(await request(`audit-logs?entityId=${alpha.entityId}`));assert.ok(audit.length>0)
     })
     let pointSegment,connectionPoint
-    await t.test('asset Excel publishes topology, cable master, poles 7/9 m and distinct ODC/ODP links',async () => {
+    await t.test('asset KML publishes topology, cable master, poles 7/9 m and distinct ODC/ODP links',async () => {
       const type=await data(await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Synthetic fixture type' }),201)
       assert.equal((await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Different name' })).status,409)
-      const point=(longitude) => JSON.stringify({ type:'Point',coordinates:[longitude,-6.21] })
-      const rows=[
-        { kind:'NODE',external_id:'start',code:'START',geometry:point(106.84) },
-        { kind:'NODE',external_id:'end',code:'END',geometry:point(106.86) },
-        { kind:'SEGMENT',external_id:'asset-line',code:'ASSET-LINE',cable_name:'TEST-ASSET',geometry:JSON.stringify({ type:'LineString',coordinates:[[106.84,-6.21],[106.86,-6.21]] }),cable_type_code:'TEST-FO',installed_core_count:12,capacity_validated:true,installation_method:'AERIAL',road_side:'LEFT',start_node_code:'START',end_node_code:'END' },
-        { kind:'POLE',external_id:'pole7',code:'P7',geometry:point(106.845),height_m:7,segment_codes:'ASSET-LINE' },
-        { kind:'POLE',external_id:'pole9',code:'P9',geometry:point(106.855),height_m:9,segment_codes:'ASSET-LINE' },
-        { kind:'ODC',external_id:'odc',code:'ODC',geometry:point(106.845),segment_codes:'ASSET-LINE' },
-        { kind:'ODP',external_id:'odp',code:'ODP',geometry:point(106.85),segment_codes:'ASSET-LINE' },
-      ]
-      const columns=['kind','external_id','code','cable_name','geometry','cable_type_code','installed_core_count','capacity_validated','installation_method','road_side','start_node_code','end_node_code','height_m','segment_codes']
-      const buffer=await spreadsheet([{ name:'Assets',columns,rows }])
-      const preview=await data(await upload('imports','assets.xlsx',buffer,{ entityId:alpha.entityId,sourceSystem:'asset-test' }),201)
+      const placemark=(id,name,geometry) => `<Placemark id="${id}"><name>${name}</name>${geometry}</Placemark>`
+      const point=(longitude) => `<Point><coordinates>${longitude},-6.21</coordinates></Point>`
+      const line='<LineString><coordinates>106.84,-6.21 106.86,-6.21</coordinates></LineString>'
+      const buffer=Buffer.from(`<kml><Document>${placemark('start','START',point(106.84))}${placemark('end','END',point(106.86))}${placemark('asset-line','TEST-ASSET',line)}${placemark('pole7','P7',point(106.845))}${placemark('pole9','P9',point(106.855))}${placemark('odc','ODC',point(106.845))}${placemark('odp','ODP',point(106.85))}</Document></kml>`)
+      const mappings={
+        '1':{ kind:'NODE',code:'START' },'2':{ kind:'NODE',code:'END' },
+        '3':{ kind:'SEGMENT',code:'ASSET-LINE',cableTypeCode:'TEST-FO',installedCoreCount:12,capacityValidated:true,installationMethod:'AERIAL',roadSide:'LEFT',startNodeCode:'START',endNodeCode:'END' },
+        '4':{ kind:'POLE',heightM:7,segmentCodes:['ASSET-LINE'] },'5':{ kind:'POLE',heightM:9,segmentCodes:['ASSET-LINE'] },
+        '6':{ kind:'ODC',segmentCodes:['ASSET-LINE'] },'7':{ kind:'ODP',segmentCodes:['ASSET-LINE'] },
+      }
+      const preview=await data(await upload('imports','assets.kml',buffer,{ entityId:alpha.entityId,sourceSystem:'asset-test',mappings:JSON.stringify(mappings) }),201)
       assert.deepEqual(preview.errors,[])
       await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'assets-v1' }),201)
       pointSegment=(await pool.query("SELECT id FROM network_segments WHERE external_id='asset-line'")).rows[0].id
@@ -437,12 +460,15 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const adapters=app.get(InternalAdapters),originalRoute=adapters.route
       adapters.route=async () => ({ distanceM:1000,shortestFeasibleDistanceM:900,policyVersion:'test-policy',roadDatasetVersion:'test-roads',geometry:{ type:'LineString',coordinates:[[106.851,-6.211],[106.85,-6.21]] } })
       try {
-        const input={ entityId:alpha.entityId,latitude:-6.211,longitude:106.851,connectionPointId:connectionPoint }
+        const input={ entityId:alpha.entityId,latitude:-6.211,longitude:106.851,connectionPointId:connectionPoint,connectionPointType:'ODP' }
         const unconfigured=await data(await request('analysis','POST',input));assert.equal(unconfigured.estimatedCableLengthM,null);assert.equal(unconfigured.routeStatus,'ROUTE_POLICY_NOT_MET_OR_UNCONFIGURED')
         await changePolicy('analysis-policy',{ radiusM:5000,formulaApproved:true,slackPercent:10,extraLengthM:20,maxDetourPercent:20 })
         const result=await data(await request('analysis','POST',input))
         assert.equal(result.nearest.segmentId,pointSegment);assert.equal(result.estimationMethod,'ROAD_ROUTE_ESTIMATE');assert.equal(result.estimatedCableLengthM,1120)
         const invalid=await data(await request('analysis','POST',{ ...input,connectionPointId:randomUUID() }));assert.equal(invalid.routeStatus,'CONNECTION_POINT_NOT_VALIDATED');assert.equal(invalid.estimatedCableLengthM,null)
+        const wrongType=await data(await request('analysis','POST',{ ...input,connectionPointType:'ODC' }));assert.equal(wrongType.routeStatus,'CONNECTION_POINT_NOT_VALIDATED');assert.equal(wrongType.estimatedCableLengthM,null)
+        assert.equal((await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.211,longitude:106.851,connectionPointType:'ODP' })).status,400)
+        assert.equal((await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.211,longitude:106.851,connectionPointId:connectionPoint })).status,400)
       } finally { adapters.route=originalRoute }
     })
     await t.test('address-only bulk geocodes through worker, uses optional validated point and exports candidates/provenance honestly',async () => {
@@ -451,12 +477,12 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       adapters.geocode=async (address) => { addresses.push(address);return address==='Synthetic ambiguous' ? { status:'AMBIGUOUS_ADDRESS',candidates:[{ latitude:-6.211,longitude:106.851,label:'Synthetic candidate' }],provider:'TEST_INTERNAL',datasetVersion:'synthetic-v1' } : { status:'OK',candidate:{ latitude:-6.211,longitude:106.851,label:'Synthetic address' },provider:'TEST_INTERNAL',datasetVersion:'synthetic-v1' } }
       adapters.route=async () => ({ distanceM:1000,shortestFeasibleDistanceM:900,policyVersion:'synthetic-policy',roadDatasetVersion:'synthetic-roads',geometry:{ type:'LineString',coordinates:[[106.851,-6.211],[106.85,-6.21]] } })
       try {
-        const buffer=await spreadsheet([{ name:'Input',columns:['reference_id','customer_name','address','latitude','longitude','connection_point_id'],rows:[
-          { reference_id:'ADDRESS-ONLY',customer_name:'Must not be sent',address:'Synthetic address',connection_point_id:connectionPoint },
-          { reference_id:'AMBIGUOUS',address:'Synthetic ambiguous' },
-          { reference_id:'COORDINATES',address:'Metadata only',latitude:-6.211,longitude:106.851 },
-        ] }])
-        const preview=await data(await upload('analysis/uploads','addresses.xlsx',buffer,{ entityId:alpha.entityId }),201)
+        const buffer=Buffer.from(`<kml><Document>
+          <Placemark id="ADDRESS-ONLY"><name>ADDRESS-ONLY</name><address>Synthetic address</address><ExtendedData><Data name="connection_point_id"><value>${connectionPoint}</value></Data><Data name="connection_point_type"><value>ODP</value></Data></ExtendedData></Placemark>
+          <Placemark><name>AMBIGUOUS</name><address>Synthetic ambiguous</address></Placemark>
+          <Placemark><name>COORDINATES</name><address>Metadata only</address><Point><coordinates>106.851,-6.211</coordinates></Point></Placemark>
+        </Document></kml>`)
+        const preview=await data(await upload('analysis/uploads','addresses.kml',buffer,{ entityId:alpha.entityId }),201)
         const job=await data(await request('analysis/jobs','POST',{ uploadId:preview.id,processValidRows:true }),202)
         for (let i=0;i<3;i++) await worker.get(JobRunnerService).tick()
         assert.deepEqual(addresses,['Synthetic address','Synthetic ambiguous'])
@@ -469,14 +495,15 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
         const output=sheet.getRows(2,sheet.rowCount-1).find((row) => row.getCell(headers.indexOf('reference_id')).value==='ADDRESS-ONLY')
         assert.equal(output.getCell(headers.indexOf('estimated_cable_length_m')).value,1120)
         assert.equal(output.getCell(headers.indexOf('connection_point_id')).value,connectionPoint)
+        assert.equal(output.getCell(headers.indexOf('connection_point_type')).value,'ODP')
         assert.equal(output.getCell(headers.indexOf('geocoding_dataset_version')).value,'synthetic-v1')
         const error=workbook.getWorksheet('Errors').getRow(2)
         assert.match(error.getCell(headers.indexOf('geocoding_candidates')).value,/Synthetic candidate/)
       } finally { adapters.geocode=originalGeocode;adapters.route=originalRoute }
     })
     await t.test('expired worker lease is recovered; committed row results are never duplicated',async () => {
-      const buffer=await spreadsheet([{ name:'Input',columns:['reference_id','latitude','longitude'],rows:[{ reference_id:'LEASE',latitude:-6.2,longitude:106.85 }] }])
-      const preview=await data(await upload('analysis/uploads','lease.xlsx',buffer,{ entityId:alpha.entityId }),201)
+      const buffer=Buffer.from('<kml><Document><Placemark><name>LEASE</name><Point><coordinates>106.85,-6.2</coordinates></Point></Placemark></Document></kml>')
+      const preview=await data(await upload('analysis/uploads','lease.kml',buffer,{ entityId:alpha.entityId }),201)
       const job=await data(await request('analysis/jobs','POST',{ uploadId:preview.id,processValidRows:true }),202)
       const staleToken=randomUUID()
       await pool.query("UPDATE jobs SET status='RUNNING',attempts=1,lease_token=$2,lease_until=clock_timestamp()-interval '1 second' WHERE id=$1",[job.id,staleToken])
@@ -491,8 +518,8 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       let calls=0
       adapters.geocode=async () => { calls++;return { status:'GEOCODING_UNAVAILABLE' } }
       try {
-        const buffer=await spreadsheet([{ name:'Input',columns:['reference_id','address','latitude','longitude'],rows:[{ reference_id:'OK',latitude:-6.2,longitude:106.85 },{ reference_id:'RETRY',address:'Synthetic test address' }] }])
-        const preview=await data(await upload('analysis/uploads','retry.xlsx',buffer,{ entityId:alpha.entityId }),201)
+        const buffer=Buffer.from('<kml><Document><Placemark><name>OK</name><Point><coordinates>106.85,-6.2</coordinates></Point></Placemark><Placemark><name>RETRY</name><address>Synthetic test address</address></Placemark></Document></kml>')
+        const preview=await data(await upload('analysis/uploads','retry.kml',buffer,{ entityId:alpha.entityId }),201)
         const job=await data(await request('analysis/jobs','POST',{ uploadId:preview.id,processValidRows:true }),202)
         await worker.get(JobRunnerService).tick();await worker.get(JobRunnerService).tick()
         assert.equal(calls,1)

@@ -109,7 +109,7 @@ export class JobsService {
         coordinate_source:result.coordinateSource,geocoding_provider:result.geocodingProvider ?? result.provider,geocoding_dataset_version:result.geocodingDatasetVersion ?? result.datasetVersion,
         geocoding_candidates:result.candidates ? JSON.stringify(result.candidates) : '',route_status:result.routeStatus,route_distance_m:(result.route as Record<string,unknown> | null)?.distanceM,formula_version:result.formulaVersion,needs_survey:result.needsSurvey }
     })
-    const columns = ['row_number','reference_id','customer_name','address','latitude','longitude','notes','connection_point_id','status','segment_id','cable_name','nearest_distance_m','estimated_cable_length_m','estimation_method','dataset_version','analysis_time','error','coordinate_source','geocoding_provider','geocoding_dataset_version','geocoding_candidates','route_status','route_distance_m','formula_version','needs_survey']
+    const columns = ['row_number','reference_id','customer_name','address','latitude','longitude','notes','connection_point_id','connection_point_type','status','segment_id','cable_name','nearest_distance_m','estimated_cable_length_m','estimation_method','dataset_version','analysis_time','error','coordinate_source','geocoding_provider','geocoding_dataset_version','geocoding_candidates','route_status','route_distance_m','formula_version','needs_survey']
     return spreadsheet([{ name:'Results',columns,rows:output },{ name:'Errors',columns,rows:output.filter((r) => r.error) },{ name:'Summary',columns:['id','total','completed','succeeded','failed','createdAt','finishedAt'],rows:[job] }])
   }
 }

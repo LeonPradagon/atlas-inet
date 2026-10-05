@@ -18,14 +18,16 @@ export interface AnalysisResult {
   status: string; coordinates?: { latitude: number; longitude: number }; candidates?: { latitude: number; longitude: number; label: string; precision?: string }[];
   attribution?: string; geocodingProvider?: string; geocodingDatasetVersion?: string | null; provider?: string; datasetVersion?: string | null;
   nearest?: { segmentId: string; cableName: string; datasetVersion: string; referencePoint: Geometry; capacity: Pick<Capacity, 'total' | 'used' | 'booked' | 'asOf'> } | null;
-  nearestNetworkDistanceM?: number | null; estimatedCableLengthM?: number | null; estimationMethod?: string; analysisTime?: string; routeStatus?: string;
+  nearestNetworkDistanceM?: number | null; estimatedCableLengthM?: number | null; estimationMethod?: string; analysisTime?: string; routeStatus?: string; connectionPointType?: 'ODC' | 'ODP';
   route?: { distanceM: number; shortestFeasibleDistanceM: number; geometry: Geometry } | null; needsSurvey: boolean;
 }
-export interface UploadPreview { id: string; preview: { rowNumber: number; referenceId: string; error: string | null }[] }
+export interface UploadPreview { id: string; preview: { rowNumber: number; referenceId: string; error: string | null; input?: { latitude?: number; longitude?: number } }[] }
 export interface ImportPreview {
   id: string; rows: { rowNumber: number; kind: string; code: string; geometry?: Geometry; address?: string; geocoding?: { provider: string; datasetVersion: string | null; confirmedAt: string } }[];
+  areas: { rowNumber: number; externalId: string; code: string; name: string; geometry: Geometry }[];
+  referenceFeatures: { rowNumber: number; externalId: string; name: string; geometry: Geometry; assetRowValid: boolean }[];
   errors: { rowNumber: number; message: string; code?: string; sourceRow?: { kind: string; code: string; address: string }; lookupId?: string; candidates?: { latitude: number; longitude: number; label: string; precision?: string }[] }[];
-  status: string; datasetId: string | null;
+  status: string; datasetId: string | null; areasPublishedAt?: string | null;
 }
 export interface Job { id: string; entityId: string; type: string; status: string; total: number; completed: number; succeeded: number; failed: number; error: string | null; cancelRequestedAt: string | null }
 export interface JobRow { id: string; rowNumber: number; referenceId: string; error: string | null; result: { status?: string } | null }

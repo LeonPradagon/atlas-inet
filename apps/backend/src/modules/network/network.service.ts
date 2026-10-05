@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
 import { AccessService } from '../access/access.service.js'
 import { NetworkRepository, type SegmentRecord } from './network.repository.js'
-import type { MapQuery, SegmentsQuery } from './network.dto.js'
+import type { MapQuery, NetworkSearchQuery, SegmentsQuery } from './network.dto.js'
 
 function segmentCompleteness(segment: SegmentRecord) {
   const missingFields: string[] = []
@@ -39,5 +39,11 @@ export class NetworkService {
       data: { type: 'FeatureCollection', features },
       meta: { page: query.page, pageSize: query.pageSize, total, geometryClipped: true, layers: query.layers },
     }
+  }
+
+  async search(userId: string, query: NetworkSearchQuery) {
+    await this.access.requireEntityPermission(userId, query.entityId, 'network.read')
+    const { data, total } = await this.repository.search(query)
+    return { data, meta: { page: 1, pageSize: query.limit, total } }
   }
 }

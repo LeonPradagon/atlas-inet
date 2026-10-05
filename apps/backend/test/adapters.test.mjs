@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { InternalAdapters } from '../dist/modules/analysis/internal-adapters.js'
+import { loadAppConfig } from '../dist/config/app-config.js'
 test('approved internal adapters distinguish unavailable, missing, ambiguous and valid results',async () => {
   const server=createServer((req,res) => {
     const chunks=[]
@@ -26,6 +27,49 @@ test('approved internal adapters distinguish unavailable, missing, ambiguous and
     assert.equal((await adapter.geocode('ambiguous')).status,'AMBIGUOUS_ADDRESS')
     assert.equal((await adapter.geocode('valid')).status,'OK')
     for (const address of ['invalid','fail','redirect','oversized']) assert.equal((await adapter.geocode(address)).status,'GEOCODING_UNAVAILABLE')
+  } finally { await new Promise((resolve) => server.close(resolve)) }
+})
+test('routing adapter posts validated connection-point coordinates and retains route provenance',async () => {
+  let received
+  const server=createServer((req,res) => {
+    const chunks=[]
+    req.on('data',(chunk) => chunks.push(chunk))
+    req.on('end',() => {
+      received={ method:req.method,url:req.url,body:JSON.parse(Buffer.concat(chunks).toString()) }
+      res.setHeader('Content-Type','application/json')
+      res.end(JSON.stringify({ distanceM:1200,shortestFeasibleDistanceM:1000,policyVersion:'synthetic-car-v1',roadDatasetVersion:'synthetic-region:sha256:abc',geometry:{ type:'LineString',coordinates:[[106.8,-6.2],[106.81,-6.21]] } }))
+    })
+  })
+  await new Promise((resolve) => server.listen(0,'127.0.0.1',resolve))
+  try {
+    const adapter=new InternalAdapters({ routingInternalUrl:`http://127.0.0.1:${server.address().port}/route` })
+    const route=await adapter.route({ latitude:-6.2,longitude:106.8 },{ type:'Point',coordinates:[106.81,-6.21] })
+    assert.deepEqual(received,{ method:'POST',url:'/route',body:{ from:{ latitude:-6.2,longitude:106.8 },to:{ type:'Point',coordinates:[106.81,-6.21] } } })
+    assert.equal(route.distanceM,1200)
+    assert.equal(route.policyVersion,'synthetic-car-v1')
+    assert.equal(route.roadDatasetVersion,'synthetic-region:sha256:abc')
+    assert.equal(route.geometry.coordinates.length,2)
+  } finally { await new Promise((resolve) => server.close(resolve)) }
+})
+test('public Photon is development-only, labeled, and excluded from bulk/import geocoding',async () => {
+  const config={ DATABASE_URL:'postgresql://atlas:secret@localhost:5432/atlas',BETTER_AUTH_SECRET:'x'.repeat(32),BETTER_AUTH_URL:'http://localhost:8080',TRUSTED_ORIGINS:'http://localhost:8080',NODE_ENV:'development',PHOTON_PUBLIC_DEV_URL:'https://photon.komoot.io' }
+  assert.equal(loadAppConfig(config).photonPublicDevUrl,'https://photon.komoot.io')
+  assert.throws(() => loadAppConfig({ ...config,NODE_ENV:'production' }))
+  assert.throws(() => loadAppConfig({ ...config,GEOCODING_INTERNAL_URL:'http://127.0.0.1:3001' }))
+
+  const server=createServer((req,res) => {
+    res.setHeader('Content-Type','application/json')
+    res.end(JSON.stringify({ features:[{ geometry:{ type:'Point',coordinates:[106.8,-6.2] },properties:{ countrycode:'ID',name:'Synthetic dev result',housenumber:'1' } }] }))
+  })
+  await new Promise((resolve) => server.listen(0,'127.0.0.1',resolve))
+  try {
+    const adapter=new InternalAdapters({ photonPublicDevUrl:`http://127.0.0.1:${server.address().port}` })
+    assert.equal((await adapter.geocode('synthetic address')).status,'GEOCODING_NOT_CONFIGURED')
+    const result=await adapter.geocode('synthetic address',true)
+    assert.equal(result.status,'OK')
+    assert.equal(result.provider,'PHOTON_PUBLIC_DEV')
+    assert.equal(result.datasetVersion,null)
+    assert.match(result.attribution,/OpenStreetMap contributors/)
   } finally { await new Promise((resolve) => server.close(resolve)) }
 })
 test('Photon internal queries Indonesia only, preserves lon/lat and asks confirmation for ambiguous/coarse results',async () => {

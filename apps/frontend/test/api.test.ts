@@ -18,6 +18,15 @@ describe('central API contracts', () => {
     expect(adapter.mock.calls[1][0].url).toBe(`${API_ENDPOINTS.settings}/booking-policy/requests`)
     await atlasApi.capacity.book({ segmentId: 's' } as never, 'stable-key')
     expect(adapter.mock.calls[2][0].headers.get('Idempotency-Key')).toBe('stable-key')
+    await atlasApi.notifications.unreadCount('alpha', signal)
+    expect(adapter.mock.calls[3][0]).toMatchObject({ url: `${API_ENDPOINTS.notifications}/unread-count`, params: { entityId: 'alpha' }, signal })
+  })
+  it('searches the entity-wide network with scoped query and cancellation', async () => {
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({ config, data: { data: [], meta: { total: 0 } }, status: 200, statusText: 'OK', headers: {} }))
+    axiosClient.defaults.adapter = adapter
+    const signal = new AbortController().signal
+    await atlasApi.network.search('alpha', 'ODP-12', signal)
+    expect(adapter.mock.calls[0][0]).toMatchObject({ url: API_ENDPOINTS.networkSearch, params: { entityId: 'alpha', q: 'ODP-12', limit: 15 }, signal, withCredentials: true })
   })
   it('multipart upload preserves file and approval is explicit', async () => {
     const adapter = vi.fn<AxiosAdapter>(async (config) => ({ config, data: { data: { id: 'real' } }, status: 201, statusText: 'Created', headers: {} }))

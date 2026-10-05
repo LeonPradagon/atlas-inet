@@ -31,7 +31,7 @@ Base `/api/v1`; session Better Auth wajib. Permission berlaku **per entitas**, t
 
 List menggunakan `entityId`, `page` (default 1), `pageSize` (default 25; maksimal 100). Booking/waiting list menerima tambahan `segmentId` dan enum `status`. Filter status memakai status persisted; detail jaringan menyertakan `capacity.expiryPendingCount` saat expiry belum dimaterialisasi worker. `name-history` dan `jobs/:id/rows` menggunakan pagination tanpa `entityId`; scope berasal dari resource.
 
-`GET /imports/template` dan `/analysis/template` memberikan template XLSX kosong, session wajib. Format contoh berikut hanya bentuk kontrak; bukan standar nama/data perusahaan.
+Seluruh upload/import operasional menerima KML/KMZ. XLSX digunakan untuk ekspor hasil saja.
 
 ### Booking dan waiting list
 
@@ -55,7 +55,7 @@ Master kabel bersifat global/immutable pada baseline. POST menerima `{ entityId,
 
 ### Analisis individual
 
-`POST /analysis`: `{ entityId, latitude?, longitude?, address?, connectionPointId? }`. Koordinat harus berpasangan, number WGS84, longitude −180..180 / latitude −90..90; jika ada koordinat lengkap, alamat hanya metadata. HTTP 200 untuk hasil domain, termasuk kondisi tidak ditemukan/dependency belum tersedia.
+`POST /analysis`: `{ entityId, latitude?, longitude?, address?, connectionPointId?, connectionPointType?: 'ODC' | 'ODP' }`. Koordinat harus berpasangan, number WGS84, longitude −180..180 / latitude −90..90; jika ada koordinat lengkap, alamat hanya metadata. Jika titik sambung dipakai, ID dan tipe wajib dikirim bersama; tipe memilih tabel/relasi aset berbeda. ID tanpa tipe atau tipe tanpa ID ditolak. HTTP 200 untuk hasil domain, termasuk kondisi tidak ditemukan/dependency belum tersedia.
 
 Hasil memuat status, coordinates/source, radius/policy version, nearest canonical segment/dataset/capacity snapshot, distance meter, estimasi/metode/time. Jarak geometric ke kabel **bukan** panjang rute jalan. Tidak ada booking otomatis. `needsSurvey` tetap true.
 
@@ -67,11 +67,11 @@ Routing adapter `ROUTING_INTERNAL_URL` menerima POST `{ from: { latitude, longit
 
 ### Import jaringan
 
-Multipart `POST /imports`: `file`, `entityId`, `sourceSystem`, optional JSON-text `mappings`. Ekstensi `.kml` atau `.xlsx`, maksimal 20 MB/10.000 rows. Preview persist berisi rows/errors dan fingerprint source; belum publish. Validasi struktur terjadi di preview, domain/naming/topology/kapasitas dicek ulang secara atomik saat publish.
+Multipart `POST /imports`: `file`, `entityId`, `sourceSystem`, optional JSON-text `mappings`. Ekstensi `.kml`/`.kmz`, maksimal 20 MB dan 20.000 Placemark. KMZ wajib berisi satu dokumen KML; expanded archive dibatasi 64 MB. Preview persist berisi rows/errors dan fingerprint source; belum publish. Validasi struktur terjadi di preview, domain/naming/topology/kapasitas dicek ulang secara atomik saat publish.
 
-KML: namespace/folder didukung; satu geometry per Placemark: Point, LineString, atau MultiGeometry LineStrings. Altitude diabaikan untuk geometry 2D; entities/DOCTYPE dan geometry mixed/zero length ditolak. Placemark `id` adalah external ID; `ExtendedData/Data name="code"` atau id menjadi code. Point membutuhkan mapping kind eksplisit (`NODE`, `POLE`, `ODC`, `ODP`). `mappings` keyed berdasarkan nomor Placemark 1-based dan dapat melengkapi externalId/code/metadata/relasi. KML tanpa identitas memerlukan mapping eksplisit; tidak menebak ID dari nama kabel.
+KML/KMZ aset: namespace/folder didukung; satu geometry per Placemark: Point, LineString, atau MultiGeometry LineStrings. Altitude diabaikan untuk geometry 2D; entities/DOCTYPE dan geometry mixed/zero length ditolak; Polygon tidak didukung sebagai aset. Placemark `id` adalah external ID; `ExtendedData/Data name="code"` atau id menjadi code. Point membutuhkan mapping kind eksplisit (`NODE`, `POLE`, `ODC`, `ODP`). `mappings` keyed berdasarkan nomor Placemark 1-based dan dapat melengkapi externalId/code/metadata/relasi. KML tanpa identitas memerlukan mapping eksplisit; tidak menebak ID dari nama kabel.
 
-XLSX aset: sheet `Assets`, kolom `kind`, `external_id`, `code`, `cable_name`, `geometry` (GeoJSON JSON-text), `cable_type_code`, `installed_core_count`, `capacity_validated` (boolean), `installation_method`, `road_side`, `start_node_code`, `end_node_code`, `height_m`, `segment_codes` (comma-separated). Nilai kosong mempertahankan metadata existing. Untuk mengosongkan relasi secara eksplisit gunakan mapping KML `segmentCodes: []` atau edit terotorisasi berikutnya; blank Excel tidak menghapus relasi. POLE wajib 7/9 m; ODC dan ODP terpisah.
+Nilai kosong mempertahankan metadata existing. Untuk mengosongkan relasi secara eksplisit gunakan mapping KML `segmentCodes: []` atau edit terotorisasi berikutnya. POLE wajib 7/9 m; ODC dan ODP terpisah.
 
 Publish `POST /imports/:id/publish { version }`: merge source ke dataset canonical satu entity/source, ID aset stabil berdasarkan `(owner, sourceSystem, externalId)`. Version baru wajib untuk update; replay preview published mengembalikan dataset yang sama. Tidak menghapus aset yang absen, memindahkan aset ke owner lain, menimpa booking/allocation, atau menciptakan core/tipe kabel rekaan. Preview stale / code/nama duplicate / kapasitas tidak cukup ditolak. Source dengan beberapa dataset memerlukan migrasi/mapping eksplisit, tidak dipilih diam-diam. Histori preview menyimpan batch, bukan snapshot temporal seluruh dataset.
 
@@ -81,7 +81,7 @@ Kolom aset tambahan `address`, `latitude`, `longitude`: aset titik tanpa geometr
 
 ### Bulk dan jobs
 
-Multipart `POST /analysis/uploads`: `file`, `entityId`. Sheet `Input`; kolom `reference_id`, `customer_name`, `address`, `latitude`, `longitude`, `notes`, optional UUID `connection_point_id`. Template lama tetap valid. Alamat saja diproses geocoder internal oleh worker; koordinat lengkap bypass geocoding. Number koordinat wajib number Excel; reference kosong memakai nomor baris; duplicate ditandai error. Formula/hyperlink/complex cell ditolak. Preview maksimal 100 baris dengan total valid/invalid.
+Multipart `POST /analysis/uploads`: `file`, `entityId`, ekstensi `.kml`/`.kmz`, maksimal 20 MB/20.000 Placemark. Tiap Placemark harus berisi satu Point atau alamat saja; LineString/Polygon ditolak karena merupakan geometri jaringan, bukan target lokasi. KML Point memakai urutan longitude,latitude. `ExtendedData` mendukung `reference_id`, `customer_name`, `address`, `notes`, optional `connection_point_id` dan `connection_point_type` (`ODC`/`ODP`); ID dan tipe harus berpasangan. Alamat saja diproses geocoder internal oleh worker; Point bypass geocoding. Preview 100 Placemark pertama beserta marker valid ditampilkan di peta. Hasil job tetap XLSX.
 
 `POST /analysis/jobs { uploadId, processValidRows: true }` → HTTP 202 `{ data: { id } }`; approval false ditolak. Baris invalid tetap tersimpan sebagai error; seluruh baris dapat ditelusuri. Submit ulang upload mengembalikan job existing.
 
@@ -93,7 +93,7 @@ Multipart `POST /analysis/uploads`: `file`, `entityId`. Sheet `Input`; kolom `re
 
 Pemilik tetap memerlukan permission dasar `analysis.bulk` atau `reports.export` saat read/download. User lain membutuhkan permission dasar **dan** `jobs.read` di entitas sama; cancel/retry user lain membutuhkan `jobs.manage`. Worker mengecek grant aktif; revoke menggagalkan job/download, tidak memberikan bypass service account. Persisted records belum dipurge otomatis.
 
-Bulk export menyertakan `connection_point_id`, `coordinate_source`, `geocoding_provider`, `geocoding_dataset_version`, `geocoding_candidates` (JSON-text), `route_status`, `route_distance_m`, `formula_version`, `needs_survey`. Ambiguous tetap error tanpa koordinat pilihan palsu; kandidat dapat diverifikasi lalu dikirim sebagai koordinat pada template Input baru. Geocoding sukses tidak menjamin tersedia jaringan/rute/estimasi.
+Bulk export menyertakan `connection_point_id`, `connection_point_type`, `coordinate_source`, `geocoding_provider`, `geocoding_dataset_version`, `geocoding_candidates` (JSON-text), `route_status`, `route_distance_m`, `formula_version`, `needs_survey`. Ambiguous tetap error tanpa koordinat pilihan palsu; kandidat dapat diverifikasi lalu dianalisis ulang melalui KML/KMZ baru. Geocoding sukses tidak menjamin tersedia jaringan/rute/estimasi.
 
 Worker claim memakai lease 30 detik dan token fence. Setiap row/counter commit atomik; restart melanjutkan rows pending. Crash sesudah provider call sebelum commit dapat memanggil provider lagi; tidak mengklaim exactly-once external request. Maksimal 3 failed lease attempts sebelum FAILED. Dua active jobs/user, upload 10.000 baris, ZIP expanded-content/entry limits. Baseline serial memprioritaskan correctness, bukan SLA throughput.
 

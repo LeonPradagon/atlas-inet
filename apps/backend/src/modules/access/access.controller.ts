@@ -1,4 +1,4 @@
-import { BadRequestException, Controller, Get, Query, Req, UseGuards } from '@nestjs/common'
+import { BadRequestException, Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
 import { AccessService } from './access.service.js'
@@ -30,5 +30,12 @@ export class AccessController {
   @RequireEntityPermission('entities.read')
   detail(@Req() request: EntityScopedRequest) {
     return { data: request.entityAccess }
+  }
+
+  @Get(':entityId/presales')
+  @UseGuards(EntityPermissionGuard)
+  @RequireEntityPermission('bookings.create')
+  async presales(@Param('entityId') entityId: string) {
+    return { data: await this.access.findPresalesUsers(entityId) }
   }
 }
