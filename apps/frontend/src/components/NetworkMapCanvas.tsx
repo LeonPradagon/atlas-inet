@@ -47,6 +47,23 @@ const featureColor: ExpressionSpecification = [
   '#6c757d',
 ]
 
+function distanceLabel(distanceM: number) {
+  return `${new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(distanceM)} m`
+}
+
+function layerLabel(layer: string) {
+  const labels: Record<string, string> = {
+    segments: 'Segmen kabel operasional',
+    poles: 'Tiang',
+    odc: 'ODC',
+    odp: 'ODP',
+    areas: 'Area referensi',
+    references: 'Placemark KML · referensi belum dipetakan',
+    analysis: 'Lokasi analisis',
+  }
+  return labels[layer] ?? layer
+}
+
 function addPinIcon(map: MapLibreMap, name: string, color: string) {
   if (map.hasImage(name)) return
   const canvas = document.createElement('canvas')
@@ -102,8 +119,11 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
   const sourceRef = useRef<GeoJSONSource | null>(null)
   const boundsConstructorRef = useRef<typeof LngLatBounds | null>(null)
   const previousFeaturesRef = useRef<NetworkMapFeature[] | null>(null)
+  const hasAutoFitRef = useRef(false)
   const [mapReady, setMapReady] = useState(false)
   const [mapLoadFailed, setMapLoadFailed] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [cssFullscreen, setCssFullscreen] = useState(false)
   const viewportCallback = useRef(onViewportChange)
   const segmentCallback = useRef(onSegmentSelect)
   viewportCallback.current = onViewportChange
@@ -112,6 +132,9 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+
+    const syncFullscreen = () => setIsFullscreen(document.fullscreenElement === container || container.classList.contains('network-map-canvas-fallback-fullscreen'))
+    document.addEventListener('fullscreenchange', syncFullscreen)
 
     let cancelled = false
     let map: MapLibreMap | null = null
@@ -246,6 +269,14 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
         boundsConstructorRef.current = maplibre.LngLatBounds
 
         let activePopup: InstanceType<typeof maplibre.Popup> | null = null
+        const lineHoverContent = document.createElement('div')
+        lineHoverContent.className = 'network-map-line-hover'
+        const lineHoverName = document.createElement('strong')
+        const lineHoverLength = document.createElement('span')
+        lineHoverContent.append(lineHoverName, lineHoverLength)
+        const lineHoverPopup = new maplibre.Popup({ closeButton: false, closeOnClick: false, maxWidth: 'min(22rem, 80vw)', offset: 12, className: 'network-map-hover-popup' })
+          .setDOMContent(lineHoverContent)
+        let hoveredLineId = ''
         let highlightedAreaId: string | number | null = null
         let popupTitleHovered = false
         const highlightArea = (id: string | number | null) => {
@@ -263,9 +294,41 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           loadedMap.getCanvas().style.cursor = ''
           if (!popupTitleHovered) highlightArea(null)
         })
+        loadedMap.on('mousemove', 'network-lines', (event) => {
+          const feature = event.features?.find((candidate) => {
+            const geometryType = candidate.geometry.type
+            return (candidate.properties?.layer === 'references' || candidate.properties?.layer === 'segments')
+              && (geometryType === 'LineString' || geometryType === 'MultiLineString')
+              && Number.isFinite(Number(candidate.properties?.sourceLengthM))
+          })
+          if (!feature) {
+            hoveredLineId = ''
+            lineHoverPopup.remove()
+            loadedMap.getCanvas().style.cursor = ''
+            return
+          }
+          loadedMap.getCanvas().style.cursor = 'help'
+          const properties = feature.properties as Record<string, unknown>
+          const id = String(feature.id ?? properties.id ?? '')
+          if (id !== hoveredLineId) {
+            hoveredLineId = id
+            lineHoverName.textContent = String(properties.name ?? 'Placemark KML')
+            const measureName = properties.layer === 'references' ? 'Panjang geometri KML' : 'Panjang geometri segmen'
+            lineHoverLength.textContent = `${measureName}: ${distanceLabel(Number(properties.sourceLengthM))}`
+          }
+          lineHoverPopup.setLngLat(event.lngLat)
+          if (!lineHoverPopup.isOpen()) lineHoverPopup.addTo(loadedMap)
+        })
+        loadedMap.on('mouseleave', 'network-lines', () => {
+          hoveredLineId = ''
+          lineHoverPopup.remove()
+          loadedMap.getCanvas().style.cursor = ''
+        })
         loadedMap.on('click', ['network-polygons', 'network-lines', 'network-points', 'area-boundaries', 'area-boundary-casing'], (event) => {
           const feature = event.features?.[0]
           if (!feature) return
+          lineHoverPopup.remove()
+          hoveredLineId = ''
 
           const properties = feature.properties as Record<string, unknown> | undefined
           if (properties?.layer === 'segments' && typeof properties.id === 'string') segmentCallback.current?.(properties.id)
@@ -282,11 +345,38 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
             title.addEventListener('focus', () => { popupTitleHovered = true; highlightArea(areaId) })
             title.addEventListener('blur', () => { popupTitleHovered = false; highlightArea(null) })
           }
-          popupContent.append(title)
+          const header = document.createElement('div')
+          header.className = 'network-map-popup-header'
+          header.append(title)
+          const closeButton = document.createElement('button')
+          closeButton.type = 'button'
+          closeButton.className = 'network-map-popup-close btn btn-outline-secondary btn-sm'
+          closeButton.title = 'Tutup'
+          closeButton.setAttribute('aria-label', 'Tutup detail fitur peta')
+          const closeIcon = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+          closeIcon.setAttribute('viewBox', '0 0 16 16')
+          closeIcon.setAttribute('width', '16')
+          closeIcon.setAttribute('height', '16')
+          closeIcon.setAttribute('aria-hidden', 'true')
+          const cross = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+          cross.setAttribute('d', 'M3 3l10 10M13 3L3 13')
+          cross.setAttribute('fill', 'none')
+          cross.setAttribute('stroke', 'currentColor')
+          cross.setAttribute('stroke-width', '1.8')
+          cross.setAttribute('stroke-linecap', 'round')
+          closeButton.textContent = ''
+          closeIcon.append(cross)
+          closeButton.append(closeIcon)
+          closeButton.addEventListener('click', (clickEvent) => {
+            clickEvent.stopPropagation()
+            activePopup?.remove()
+          })
+          header.append(closeButton)
+          popupContent.append(header)
           if (typeof properties?.layer === 'string') {
             const detail = document.createElement('div')
             detail.className = 'network-map-popup-layer'
-            detail.textContent = properties.layer
+            detail.textContent = layerLabel(properties.layer)
             popupContent.append(detail)
           }
           const attributes = properties?.attributes && typeof properties.attributes === 'object'
@@ -294,6 +384,10 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
             : []
           if (!attributes.some(([key]) => key.toLowerCase() === 'name')) attributes.unshift(['name', properties?.name ?? ''])
           const geometry = feature.geometry
+          if ((properties?.layer === 'references' || properties?.layer === 'segments') && (geometry.type === 'LineString' || geometry.type === 'MultiLineString') && Number.isFinite(Number(properties.sourceLengthM))) {
+            const measureName = properties.layer === 'references' ? 'panjang geometri KML' : 'panjang geometri segmen'
+            attributes.push([measureName, distanceLabel(Number(properties.sourceLengthM))])
+          }
           const coordinate = geometry.type === 'Point' ? geometry.coordinates
             : geometry.type === 'LineString' ? geometry.coordinates[0]
               : geometry.type === 'MultiLineString' ? geometry.coordinates[0]?.[0] : undefined
@@ -314,7 +408,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           }
 
           activePopup?.remove()
-          activePopup = new maplibre.Popup({ maxWidth: 'min(34rem, 84vw)' })
+          activePopup = new maplibre.Popup({ maxWidth: 'min(34rem, 84vw)', closeButton: false })
             .setLngLat(event.lngLat)
             .setDOMContent(popupContent)
             .addTo(loadedMap)
@@ -342,6 +436,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
     return () => {
       cancelled = true
       resizeObserver?.disconnect()
+      document.removeEventListener('fullscreenchange', syncFullscreen)
       map?.remove()
       mapRef.current = null
       sourceRef.current = null
@@ -349,6 +444,48 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
       previousFeaturesRef.current = null
     }
   }, [style])
+
+  async function toggleFullscreen() {
+    const container = containerRef.current
+    if (!container) return
+    if (document.fullscreenElement === container) {
+      await document.exitFullscreen().catch(() => {
+        setCssFullscreen(false)
+        setIsFullscreen(false)
+      })
+      return
+    }
+    if (cssFullscreen) {
+      setCssFullscreen(false)
+      setIsFullscreen(false)
+      return
+    }
+    try {
+      await container.requestFullscreen()
+    } catch {
+      // Keep expand usable in embedded browsers that block the native fullscreen API.
+      setCssFullscreen(true)
+      setIsFullscreen(true)
+    }
+    requestAnimationFrame(() => mapRef.current?.resize())
+  }
+
+  useEffect(() => {
+    if (!cssFullscreen) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setCssFullscreen(false)
+        setIsFullscreen(false)
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [cssFullscreen])
+
+  useEffect(() => {
+    if (!cssFullscreen) return
+    requestAnimationFrame(() => mapRef.current?.resize())
+  }, [cssFullscreen])
 
   useEffect(() => {
     const map = mapRef.current
@@ -370,10 +507,15 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
     source.setData(collection)
 
     const LngLatBoundsClass = boundsConstructorRef.current
-    if (!viewportCallback.current && previousFeaturesRef.current !== features && LngLatBoundsClass) {
-      const bounds = getFeatureBounds(visibleFeatures, LngLatBoundsClass)
-      if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 48, maxZoom: 16, duration: 0 })
+    if (previousFeaturesRef.current !== features) {
       previousFeaturesRef.current = features
+      if (!hasAutoFitRef.current && visibleFeatures.length > 0 && LngLatBoundsClass) {
+        const bounds = getFeatureBounds(visibleFeatures, LngLatBoundsClass)
+        if (!bounds.isEmpty()) {
+          hasAutoFitRef.current = true
+          map.fitBounds(bounds, { padding: 64, maxZoom: 13, duration: 0 })
+        }
+      }
     }
   }, [features, focusFeature, mapReady, search, visibleLayers])
 
@@ -392,7 +534,12 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
 
   return (
     <>
-      <div ref={containerRef} className="network-map-canvas" role="region" aria-label="Peta jaringan OpenFreeMap" />
+      <div ref={containerRef} className={`network-map-canvas${cssFullscreen ? ' network-map-canvas-fallback-fullscreen' : ''}`} role="region" aria-label="Peta jaringan OpenFreeMap">
+        <button className="network-map-fullscreen btn btn-light btn-sm" type="button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? 'Keluar dari layar penuh' : 'Tampilkan peta layar penuh'} title={isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}>
+          <i className={`bi ${isFullscreen ? 'bi-fullscreen-exit' : 'bi-arrows-fullscreen'}`} aria-hidden="true" />
+          <span className="visually-hidden">{isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}</span>
+        </button>
+      </div>
       {mapLoadFailed && <p className="alert alert-warning mt-2 mb-0" role="alert">Peta gagal dimuat. Periksa koneksi lalu muat ulang halaman.</p>}
     </>
   )

@@ -1,11 +1,11 @@
-import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common'
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { ConflictException, HttpException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common'
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { DatabaseService } from '../../database/database.service.js'
 import type { Transaction } from '../../database/transaction.js'
 import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDatasets, networkNodes, networkSegments, odcs, odps, poles, referenceAreas, referenceFeatures, segmentOdcs, segmentOdps, segmentPoles } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
-import { validateCableName } from '../assets/assets.service.js'
+import { validateCableName, validateImportedCableName } from '../assets/assets.service.js'
 import { readUsage } from '../capacity/capacity.repository.js'
 import { assetRowSchema, pointAddressSchema, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
 import type { UploadFile } from '../files/tabular-files.js'
@@ -27,8 +27,19 @@ async function fingerprint(db: Db, entityId: string, sourceSystem: string) {
   return result.rows[0].hash
 }
 const geom = (row: { geometry: unknown }) => sql`ST_SetSRID(ST_GeomFromGeoJSON(${JSON.stringify(row.geometry)}),4326)`
-const hasUnmappedReferenceFeatures = (preview: { referenceFeatures: Record<string, unknown>[] }) =>
-  preview.referenceFeatures.some((feature) => feature.assetRowValid !== true)
+const referenceDatasetVersion = (previewId: string) => `reference-${previewId}`
+const operationalDatasetVersion = (previewId: string) => `import-${previewId}`
+
+function autoPublishError(error: unknown) {
+  if (!(error instanceof HttpException)) return 'Penerapan otomatis gagal karena kesalahan sistem.'
+  const response = error.getResponse()
+  if (typeof response === 'string') return response
+  if (response && typeof response === 'object' && 'message' in response) {
+    const message = response.message
+    return Array.isArray(message) ? message.join('; ') : String(message)
+  }
+  return error.message
+}
 
 @Injectable()
 export class ImportsService {
@@ -38,10 +49,18 @@ export class ImportsService {
     await this.access.requireEntityPermission(userId, entityId, 'imports.write')
     const parsed = await parseAssetFile(file, mappings)
     const baseFingerprint = await fingerprint(this.database.db, entityId, sourceSystem)
-    const [preview] = await this.database.db.insert(importPreviews).values({ entityId, ownerId: userId, sourceSystem, sourceName: file.originalname, rows: parsed.rows, areas: parsed.areas, referenceFeatures: parsed.referenceFeatures, errors: parsed.errors, baseFingerprint }).returning()
+    const preview = await this.database.db.transaction(async (tx) => {
+      const [record] = await tx.insert(importPreviews).values({ entityId, ownerId: userId, sourceSystem, sourceName: file.originalname, rows: parsed.rows, areas: parsed.areas, referenceFeatures: parsed.referenceFeatures, errors: parsed.errors, baseFingerprint }).returning()
+      await tx.insert(auditLogs).values({ entityId, actorId: userId, action: 'IMPORT_PREVIEW_CREATED', resourceId: record.id,
+        details: { sourceSystem, validRows: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, errors: parsed.errors.length } })
+      return record
+    })
     const hasReferences = parsed.areas.length > 0 || parsed.referenceFeatures.length > 0
-    const published = hasReferences ? await this.publishAreas(userId, preview.id, `reference-${preview.id}`) : { data: preview }
-    return { data: published.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, publishRequiresDomainValidation: true } }
+    const references = hasReferences ? await this.publishAreas(userId, preview.id) : { data: preview }
+    const applied = parsed.errors.length === 0 && parsed.rows.length > 0
+      ? await this.autoPublishIfReady(userId, preview.id)
+      : references
+    return { data: applied.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, operationalAutoPublished: applied.data.status === 'PUBLISHED' } }
   }
 
   async get(userId: string, id: string) {
@@ -49,6 +68,27 @@ export class ImportsService {
     if (!preview) throw new NotFoundException('Import not found')
     await this.access.requireEntityPermission(userId, preview.entityId, 'imports.write')
     return { data: preview }
+  }
+
+  async list(userId: string, entityId: string, page: number, pageSize: number) {
+    await this.access.requireEntityPermission(userId, entityId, 'imports.write')
+    const where = and(eq(importPreviews.entityId, entityId), eq(importPreviews.ownerId, userId))
+    const data = await this.database.db.select({
+      id: importPreviews.id,
+      sourceName: importPreviews.sourceName,
+      sourceSystem: importPreviews.sourceSystem,
+      status: importPreviews.status,
+      datasetId: importPreviews.datasetId,
+      areasPublishedAt: importPreviews.areasPublishedAt,
+      publishedAt: importPreviews.publishedAt,
+      createdAt: importPreviews.createdAt,
+      validRows: sql<number>`jsonb_array_length(${importPreviews.rows})::int`,
+      referenceAreas: sql<number>`jsonb_array_length(${importPreviews.areas})::int`,
+      referenceFeatures: sql<number>`jsonb_array_length(${importPreviews.referenceFeatures})::int`,
+      errors: sql<number>`jsonb_array_length(${importPreviews.errors})::int`,
+    }).from(importPreviews).where(where).orderBy(desc(importPreviews.createdAt), desc(importPreviews.id)).limit(pageSize).offset((page - 1) * pageSize)
+    const [{ total }] = await this.database.db.select({ total: sql<number>`count(*)::int` }).from(importPreviews).where(where)
+    return { data, meta: { page, pageSize, total } }
   }
 
   async geocodeRow(userId: string, id: string, rowNumber: number) {
@@ -70,14 +110,16 @@ export class ImportsService {
       const updated = errors.map((row) => row === pending ? { ...row, code: candidates.length ? 'COORDINATE_CONFIRMATION_REQUIRED' : result.status,
         message: candidates.length ? 'Konfirmasi kandidat koordinat sebelum publish. Geocoding tidak membuktikan lokasi aset fisik.' : result.status,
         candidates, lookupId: randomUUID(), provider: 'provider' in result ? result.provider : 'INTERNAL_GEOCODING', datasetVersion: 'datasetVersion' in result ? result.datasetVersion : null } : row)
-      const [record] = await tx.update(importPreviews).set({ errors: updated }).where(eq(importPreviews.id, id)).returning()
+      const [record] = await tx.update(importPreviews).set({ errors: updated, autoPublishError: null }).where(eq(importPreviews.id, id)).returning()
+      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_GEOCODED', resourceId: id,
+        details: { rowNumber, status: result.status, provider: 'provider' in result ? result.provider : 'INTERNAL_GEOCODING', datasetVersion: 'datasetVersion' in result ? result.datasetVersion : null } })
       return { data: record }
     })
   }
 
   async confirmRow(userId: string, id: string, rowNumber: number, lookupId: string, candidateIndex: number) {
     const { data: preview } = await this.get(userId, id)
-    return this.database.db.transaction(async (tx) => {
+    await this.database.db.transaction(async (tx) => {
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status !== 'PREVIEW') throw new ConflictException('Published import cannot be changed')
       const errors = current.errors as ImportError[]
@@ -89,13 +131,26 @@ export class ImportsService {
       const row = parseInput(assetRowSchema, { ...draft, geometry: { type: 'Point', coordinates: [candidate.longitude, candidate.latitude] },
         geocoding: { provider: pending.provider ?? 'INTERNAL_GEOCODING', datasetVersion: pending.datasetVersion ?? null, confirmedBy: userId, confirmedAt: new Date().toISOString(), label: candidate.label, ...(candidate.precision ? { precision: candidate.precision } : {}) } })
       const rows = [...current.rows, row].sort((a, b) => Number(a.rowNumber) - Number(b.rowNumber))
-      const [record] = await tx.update(importPreviews).set({ rows, errors: errors.filter((error) => error !== pending) }).where(eq(importPreviews.id, id)).returning()
+      const [record] = await tx.update(importPreviews).set({ rows, errors: errors.filter((error) => error !== pending), autoPublishError: null }).where(eq(importPreviews.id, id)).returning()
       await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_COORDINATES_CONFIRMED', resourceId: id, details: { rowNumber, provider: row.geocoding?.provider, datasetVersion: row.geocoding?.datasetVersion, coordinates: row.geometry.coordinates } })
       return { data: record }
     })
+    return this.autoPublishIfReady(userId, id)
   }
 
-  async publishAreas(userId: string, id: string, version: string) {
+  private async autoPublishIfReady(userId: string, id: string) {
+    const { data: preview } = await this.get(userId, id)
+    if (preview.status !== 'PREVIEW' || preview.errors.length || !preview.rows.length) return { data: preview }
+    try {
+      await this.publish(userId, id)
+    } catch (error) {
+      await this.database.db.update(importPreviews).set({ autoPublishError: autoPublishError(error) }).where(eq(importPreviews.id, id))
+    }
+    return this.get(userId, id)
+  }
+
+  async publishAreas(userId: string, id: string) {
+    const version = referenceDatasetVersion(id)
     const { data: preview } = await this.get(userId, id)
     if (!preview.areas.length && !preview.referenceFeatures.length) throw new UnprocessableEntityException('Import preview has no valid reference features')
     if (preview.status !== 'PREVIEW') throw new ConflictException('Import is already published')
@@ -143,14 +198,15 @@ export class ImportsService {
     })
   }
 
-  async publish(userId: string, id: string, version: string) {
+  async publish(userId: string, id: string) {
+    const version = operationalDatasetVersion(id)
     const { data: preview } = await this.get(userId, id)
-    if (preview.errors.length || hasUnmappedReferenceFeatures(preview) || (!preview.rows.length && !preview.areas.length)) throw new UnprocessableEntityException('Resolve import errors and map reference features before operational publish')
+    if (preview.errors.length || !preview.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
     return this.database.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${preview.entityId + ':network-write'},0))`)
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status === 'PUBLISHED') return { data: { id, datasetId: current.datasetId, status: current.status } }
-      if (current.errors.length || hasUnmappedReferenceFeatures(current) || (!current.rows.length && !current.areas.length)) throw new UnprocessableEntityException('Resolve import errors and map reference features before operational publish')
+       if (current.errors.length || !current.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
       if (await fingerprint(tx, preview.entityId, preview.sourceSystem) !== preview.baseFingerprint) throw new ConflictException('Source dataset changed; create a new preview')
       const rows = current.rows as AssetRow[]
       const areas = current.areas as ReferenceAreaRow[]
@@ -180,7 +236,10 @@ export class ImportsService {
       }
       for (const row of rows.filter((r) => r.kind === 'SEGMENT')) {
         const existing = locked.find((s) => s.externalId === row.externalId && s.sourceSystem === preview.sourceSystem)
-        const policyVersion = await validateCableName(tx, preview.entityId, row.cableName!, existing?.id)
+         const sourceNamedKml = /\.km[zl]$/i.test(current.sourceName)
+         const policyVersion = sourceNamedKml
+           ? await validateImportedCableName(tx, preview.entityId, row.cableName!)
+           : await validateCableName(tx, preview.entityId, row.cableName!, existing?.id)
         const startNodeId = row.startNodeCode ? nodes.get(row.startNodeCode) : existing?.startNodeId
         const endNodeId = row.endNodeCode ? nodes.get(row.endNodeCode) : existing?.endNodeId
         if ((row.startNodeCode && !startNodeId) || (row.endNodeCode && !endNodeId)) throw new UnprocessableEntityException(`Unknown topology node at row ${row.rowNumber}`)
@@ -247,8 +306,8 @@ export class ImportsService {
         inArray(referenceFeatures.externalId, rows.map((row) => `placemark-${row.rowNumber}`)),
       ))
       await tx.update(networkDatasets).set({ version, status: 'PUBLISHED', publishedAt: sql`clock_timestamp()` }).where(eq(networkDatasets.id, dataset.id))
-      await tx.update(importPreviews).set({ status: 'PUBLISHED', datasetId: dataset.id, publishedAt: sql`clock_timestamp()` }).where(eq(importPreviews.id, id))
-      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_PUBLISHED', resourceId: id, details: { datasetId: dataset.id, version, rows: rows.length, referenceAreas: areas.length, referenceFeatures: referenceRows.length, mode: 'MERGE' } })
+       await tx.update(importPreviews).set({ status: 'PUBLISHED', datasetId: dataset.id, publishedAt: sql`clock_timestamp()`, autoPublishError: null }).where(eq(importPreviews.id, id))
+       await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_PUBLISHED', resourceId: id, details: { datasetId: dataset.id, version, rows: rows.length, referenceAreas: areas.length, referenceFeatures: referenceRows.length, mode: 'MERGE', cableNamesFromKml: /\.km[zl]$/i.test(current.sourceName) } })
       return { data: { id, datasetId: dataset.id, status: 'PUBLISHED' } }
     })
   }

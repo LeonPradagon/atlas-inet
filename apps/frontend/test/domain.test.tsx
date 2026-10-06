@@ -39,8 +39,8 @@ const pendingPolicy: PolicyChangeRequest = {
   decidedBy: null, decisionReason: null, createdAt: '2026-10-03T00:00:00Z', decidedAt: null,
 }
 function ScopeHarness({ children }: { children: ReactNode }) {
-  const { entity, user, select, can } = useEntityScope()
-  return <><p data-testid="scope">{entity?.code ?? 'NONE'} / {can('bookings.create') ? 'CAN_BOOK' : 'NO_BOOK'}</p><button onClick={() => select(beta)}>Select beta</button><div key={`${user?.id}:${entity?.id}:${entity?.permissions.join(',')}`}>{children}</div></>
+  const { entity, user, can } = useEntityScope()
+  return <><p data-testid="scope">{entity?.code ?? 'NONE'} / {can('bookings.create') ? 'CAN_BOOK' : 'NO_BOOK'}</p><div key={`${user?.id}:${entity?.id}:${entity?.permissions.join(',')}`}>{children}</div></>
 }
 function mount(children: ReactNode, permissions: string[], betaPermissions: string[] = []) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } })
@@ -49,31 +49,32 @@ function mount(children: ReactNode, permissions: string[], betaPermissions: stri
   return client
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
-beforeEach(() => { vi.spyOn(atlasApi.capacity, 'presalesUsers').mockResolvedValue({ data: [{ id: 'alice', name: 'Admin' }] }) })
+beforeEach(() => {
+  window.localStorage.clear()
+  vi.spyOn(atlasApi.capacity, 'presalesUsers').mockResolvedValue({ data: [{ id: 'alice', name: 'Admin' }] })
+  vi.spyOn(atlasApi.imports, 'list').mockResolvedValue({ data: [], meta: { page: 1, pageSize: 25, total: 0 } })
+})
 
 describe('entity and session isolation', () => {
-  it('uses per-entity grants, never Admin, union or wildcard', async () => {
+  it('uses first entity grant only; entity switcher is removed', async () => {
     mount(<ReservationWorkspace />, [], ['bookings.create'])
     expect(screen.getByTestId('scope').textContent).toContain('NO_BOOK')
     expect(screen.queryByRole('button', { name: 'Booking core' })).toBeNull()
-    await userEvent.click(screen.getByText('Select beta'))
-    expect(screen.getByTestId('scope').textContent).toContain('CAN_BOOK')
-    expect(screen.getByRole('button', { name: 'Booking core' })).toBeTruthy()
+    expect(screen.queryByText('Select beta')).toBeNull()
   })
-  it('resolves revoked selection and separates user/entity cache keys', () => {
+  it('resolves first available entity and separates user/entity cache keys', () => {
     const entities = session([]).entityAccess
-    expect(resolveEntity(entities.slice(0, 1), beta)?.id).toBe(alpha)
-    expect(resolveEntity([], alpha)).toBeUndefined()
+    expect(resolveEntity(entities)?.id).toBe(alpha)
+    expect(resolveEntity([])).toBeUndefined()
     expect(domainKey(alpha, 'alice', 'notifications')).not.toEqual(domainKey(alpha, 'bob', 'notifications'))
     expect(domainKey(alpha, 'alice')).not.toEqual(domainKey(beta, 'alice'))
   })
-  it('resets forms and requests the new entity when selection changes', async () => {
+  it('loads data in first entity scope without a selector', async () => {
     const list = vi.spyOn(atlasApi.capacity, 'bookings').mockResolvedValue({ data: [], meta: { page: 1, pageSize: 25, total: 0 } })
     mount(<ReservationWorkspace />, ['bookings.create', 'bookings.read'], ['bookings.create', 'bookings.read'])
     await userEvent.type(screen.getByLabelText('Nama customer'), 'Private Alpha')
-    await userEvent.click(screen.getByText('Select beta'))
-    expect((screen.getByLabelText('Nama customer') as HTMLInputElement).value).toBe('')
-    await waitFor(() => expect(list).toHaveBeenCalledWith(beta, 1, '', expect.any(AbortSignal)))
+    expect((screen.getByLabelText('Nama customer') as HTMLInputElement).value).toBe('Private Alpha')
+    await waitFor(() => expect(list).toHaveBeenCalledWith(alpha, 1, '', expect.any(AbortSignal)))
   })
   it('401 clears domain cache and disables grants before session recheck completes', async () => {
     const auth = vi.spyOn(atlasApi.auth, 'currentUser').mockImplementation(() => new Promise(() => {}))
@@ -155,49 +156,62 @@ describe('operational API interactions', () => {
     await waitFor(() => expect(submit).toHaveBeenCalledWith('upload-real'))
     expect(await screen.findByText('job-real')).toBeTruthy()
   })
-  it('import stays in staging until publish confirmation', async () => {
-    vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: { id: 'preview-real', rows: [{ rowNumber: 1, kind: 'SEGMENT', code: 'REF' }], areas: [], referenceFeatures: [], errors: [], status: 'PREVIEW', datasetId: null } })
-    const publish = vi.spyOn(atlasApi.imports, 'publish').mockRejectedValue(new ApiError('Naming policy unapproved', 422))
+  it('shows automatic application result without a manual publish control', async () => {
+    vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: { id: 'preview-real', rows: [{ rowNumber: 1, kind: 'SEGMENT', code: 'REF' }], areas: [], referenceFeatures: [], errors: [], status: 'PUBLISHED', datasetId: 'dataset-real' } })
+    const publish = vi.spyOn(atlasApi.imports, 'publish')
     mount(<AssetsPage />, ['imports.write'])
     await userEvent.type(screen.getByLabelText('Identitas source system'), 'fixture')
     await userEvent.upload(screen.getByLabelText(/File KML/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
     fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
     await screen.findByText('preview-real')
+    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Terapkan data tervalidasi/ })).toBeNull()
     expect(publish).not.toHaveBeenCalled()
-    await userEvent.type(screen.getByLabelText('Version dataset baru yang disetujui'), 'v1')
-    await userEvent.click(screen.getByRole('button', { name: 'Konfirmasi publish dataset' }))
-    expect(await screen.findByText('Naming policy unapproved')).toBeTruthy()
-    expect(publish).toHaveBeenCalledWith('preview-real', 'v1')
   })
-  it('address-only asset lookup stays unresolved until explicit coordinate confirmation; failures block publish', async () => {
+  it('loads saved import preview only after clicking its history button in a modal', async () => {
+    const row = { id: 'saved-preview', sourceName: 'saved.kml', sourceSystem: 'fixture-source', status: 'PUBLISHED', datasetId: 'dataset-saved', areasPublishedAt: null, publishedAt: '2026-10-03T00:00:00Z', createdAt: '2026-10-03T00:00:00Z', validRows: 1, referenceAreas: 0, referenceFeatures: 0, errors: 0 }
+    const originalRootOverflow = document.documentElement.style.overflow
+    const originalBodyOverflow = document.body.style.overflow
+    vi.spyOn(atlasApi.imports, 'list').mockResolvedValue({ data: [row], meta: { page: 1, pageSize: 25, total: 1 } })
+    const get = vi.spyOn(atlasApi.imports, 'get').mockResolvedValue({ data: { id: row.id, rows: [], areas: [], referenceFeatures: [], errors: [], status: row.status, datasetId: row.datasetId } })
+    mount(<AssetsPage />, ['imports.write'])
+    const openPreview = await screen.findByRole('button', { name: 'Lihat preview' })
+    expect(get).not.toHaveBeenCalled()
+    await userEvent.click(openPreview)
+    expect(get).toHaveBeenCalledTimes(1)
+    expect(await screen.findByRole('dialog', { name: 'Preview impor tersimpan' })).toBeTruthy()
+    expect(get).toHaveBeenCalledWith(row.id, expect.any(AbortSignal))
+    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
+    expect(document.documentElement.style.overflow).toBe('hidden')
+    expect(document.body.style.overflow).toBe('hidden')
+    await userEvent.click(screen.getByRole('button', { name: 'Tutup preview' }))
+    expect(screen.queryByRole('dialog', { name: 'Preview impor tersimpan' })).toBeNull()
+    expect(document.documentElement.style.overflow).toBe(originalRootOverflow)
+    expect(document.body.style.overflow).toBe(originalBodyOverflow)
+  })
+  it('address-only import applies automatically after explicit coordinate confirmation', async () => {
     const initial = { id: 'address-preview', status: 'PREVIEW', datasetId: null, rows: [], areas: [], referenceFeatures: [], errors: [{ rowNumber: 2, code: 'ADDRESS_NEEDS_GEOCODING', message: 'Coordinates required', sourceRow: { kind: 'ODP', code: 'TEST-ODP', address: 'Synthetic address' } }] }
     const lookedUp = { ...initial, errors: [{ ...initial.errors[0], lookupId: 'lookup-real', candidates: [{ latitude: -6.2, longitude: 106.8, label: 'Synthetic candidate', precision: 'street' }] }] }
     vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: initial })
     const geocode = vi.spyOn(atlasApi.imports, 'geocodeRow').mockResolvedValue({ data: lookedUp })
-    const confirm = vi.spyOn(atlasApi.imports, 'confirmCoordinates').mockRejectedValueOnce(new ApiError('Candidates changed', 409)).mockResolvedValue({ data: { ...initial, errors: [], rows: [{ rowNumber: 2, kind: 'ODP', code: 'TEST-ODP', geometry: { type: 'Point', coordinates: [106.8, -6.2] } }] } })
-    const publish = vi.spyOn(atlasApi.imports, 'publish').mockResolvedValue({ data: { id: 'address-preview', status: 'PUBLISHED', datasetId: 'dataset-real' } })
+    const confirm = vi.spyOn(atlasApi.imports, 'confirmCoordinates').mockRejectedValueOnce(new ApiError('Candidates changed', 409)).mockResolvedValue({ data: { ...initial, errors: [], status: 'PUBLISHED', datasetId: 'dataset-real', rows: [{ rowNumber: 2, kind: 'ODP', code: 'TEST-ODP', geometry: { type: 'Point', coordinates: [106.8, -6.2] } }] } })
     mount(<AssetsPage />, ['imports.write'])
     await userEvent.type(screen.getByLabelText('Identitas source system'), 'fixture')
     await userEvent.upload(screen.getByLabelText(/File KML/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
     fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
     await screen.findByText('Coordinates required', { exact: false })
-    const publishButton = screen.getByRole('button', { name: 'Konfirmasi publish dataset' }) as HTMLButtonElement
-    expect(publishButton.disabled).toBe(true)
-    expect(geocode).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /Terapkan data tervalidasi/ })).toBeNull()
+    expect(geocode).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Cari koordinat baris 2' }))
     await screen.findByText(/Synthetic candidate/)
     expect(geocode).toHaveBeenCalledWith('address-preview', 2)
-    expect(publishButton.disabled).toBe(true); expect(confirm).not.toHaveBeenCalled()
+    expect(confirm).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Konfirmasi kandidat 1 baris 2' }))
     expect(await screen.findByText('Candidates changed')).toBeTruthy()
-    expect(publishButton.disabled).toBe(true)
+    expect(screen.queryByText(/Data lolos validasi/)).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Konfirmasi kandidat 1 baris 2' }))
-    await waitFor(() => expect(publishButton.disabled).toBe(false))
+    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
     expect(confirm).toHaveBeenCalledWith('address-preview', 2, 'lookup-real', 0)
-    expect(publish).not.toHaveBeenCalled()
-    await userEvent.type(screen.getByLabelText('Version dataset baru yang disetujui'), 'v1')
-    await userEvent.click(publishButton)
-    await waitFor(() => expect(publish).toHaveBeenCalledWith('address-preview', 'v1'))
   })
   it('ambiguous analysis uses only the explicitly selected candidate coordinates', async () => {
     const run = vi.spyOn(atlasApi.analysis, 'run').mockResolvedValueOnce({ data: { status: 'AMBIGUOUS_ADDRESS', provider: 'PHOTON_INTERNAL', datasetVersion: 'synthetic-v1', candidates: [{ latitude: -6.2, longitude: 106.8, label: 'Synthetic candidate', precision: 'street' }], needsSurvey: true } }).mockResolvedValue({ data: { status: 'NO_NETWORK_IN_RADIUS', coordinates: { latitude: -6.2, longitude: 106.8 }, estimatedCableLengthM: null, needsSurvey: true } })
@@ -212,17 +226,24 @@ describe('operational API interactions', () => {
     expect(run).toHaveBeenLastCalledWith({ entityId: alpha, address: 'Synthetic address', latitude: -6.2, longitude: 106.8 })
     expect(screen.getByText('Estimasi kabel: Belum diketahui m')).toBeTruthy()
   })
-  it('requires distinct ODC/ODP type selection for analysis connection point', async () => {
-    const run = vi.spyOn(atlasApi.analysis, 'run').mockResolvedValue({ data: { status: 'OK', connectionPointType: 'ODP', needsSurvey: true } })
+  it('offers connected point choices only when multiple points are available', async () => {
+    const coordinates = { latitude: -6.2, longitude: 106.8 }
+    const run = vi.spyOn(atlasApi.analysis, 'run')
+      .mockResolvedValueOnce({ data: { status: 'OK', coordinates, needsSurvey: true, connectionPointCandidates: [{ id: 'odp-id', code: 'ODP-01', type: 'ODP' }, { id: 'odc-id', code: 'ODC-01', type: 'ODC' }] } })
+      .mockResolvedValue({ data: { status: 'OK', coordinates, needsSurvey: true, connectionPointCode: 'ODP-01', connectionPointType: 'ODP', estimatedCableLengthM: 900, routeStatus: 'ROAD_ROUTE_ESTIMATE', route: { distanceM: 800, shortestFeasibleDistanceM: 750, geometry: { type: 'LineString', coordinates: [[106.8, -6.2], [106.81, -6.2]] } } } as never })
     mount(<AnalysisPage />, ['analysis.create'])
-    await userEvent.type(screen.getByLabelText('Latitude'), '-6.2')
-    await userEvent.type(screen.getByLabelText('Longitude'), '106.8')
-    expect(screen.queryByLabelText('ID titik sambung ODC/ODP (opsional)')).toBeNull()
-    await userEvent.selectOptions(screen.getByLabelText('Jenis titik sambung (opsional)'), 'ODP')
-    await userEvent.type(screen.getByLabelText('ID ODP'), 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    await userEvent.type(screen.getByLabelText('Lintang'), '-6.2')
+    await userEvent.type(screen.getByLabelText('Bujur'), '106.8')
+    expect(screen.queryByLabelText('Jenis titik sambung (opsional)')).toBeNull()
+    expect(screen.queryByLabelText('ID ODP')).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Jalankan analisis' }))
-    await screen.findByText('Jenis titik sambung')
-    expect(run).toHaveBeenCalledWith({ entityId: alpha, latitude: -6.2, longitude: 106.8, connectionPointId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', connectionPointType: 'ODP' })
+    await screen.findByText('Status: OK')
+    expect(run).toHaveBeenCalledWith({ entityId: alpha, latitude: -6.2, longitude: 106.8 })
+    expect(await screen.findByText('Ada beberapa titik jaringan yang terhubung.')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Pilih ODP-01 (ODP)' }))
+    expect(await screen.findByText('Titik jaringan yang digunakan')).toBeTruthy()
+    expect(await screen.findByText('Status rute: Rute berhasil ditemukan')).toBeTruthy()
+    expect(run).toHaveBeenLastCalledWith({ entityId: alpha, latitude: -6.2, longitude: 106.8, connectionPointId: 'odp-id', connectionPointType: 'ODP' })
   })
   it('policy proposal uses the loaded version, conflict does not claim activated', async () => {
     vi.spyOn(atlasApi.settings, 'get').mockImplementation(async (_entity, key) => ({ data: { key, version: 7, value: key === 'booking-policy' ? { duration: 1, unit: 'MONTH' } : key === 'naming-policy' ? { approved: false, pattern: null, uniquePerEntity: true } : { radiusM: 5000, formulaApproved: false, slackPercent: null, extraLengthM: null, maxDetourPercent: null } } }) as never)
@@ -292,15 +313,15 @@ describe('operational API interactions', () => {
     expect(await screen.findByText(/Job berada di entitas lain/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Unduh hasil XLSX' })).toBeNull()
   })
-  it('map requests real viewport and warns when the 1,000-feature limit is reached', async () => {
-    const map = vi.spyOn(atlasApi.network, 'map').mockImplementation(async (_entity, _bbox, _layers, page) => ({ data: { type: 'FeatureCollection', features: [{ type: 'Feature', id: `segments:${page}`, properties: { id: String(page), name: 'Synthetic fixture', layer: 'segments' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] } }] }, meta: { page, pageSize: 100, total: 1001 } }))
+  it('loads every map feature across API pages', async () => {
+    const map = vi.spyOn(atlasApi.network, 'map').mockImplementation(async (_entity, _bbox, _layers, page) => ({ data: { type: 'FeatureCollection', features: [{ type: 'Feature', id: `segments:${page}`, properties: { id: String(page), name: 'Synthetic fixture', layer: 'segments' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] } }] }, meta: { page, pageSize: 1000, total: 1001 } }))
     mount(<NetworkMapPage />, ['network.read'])
     expect(map).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Report viewport' }))
-    expect(await screen.findByText(/Viewport berisi lebih dari 1.000 fitur/)).toBeTruthy()
-    expect(map).toHaveBeenCalledTimes(10)
-    expect(map.mock.calls[0].slice(0, 4)).toEqual([alpha, '106,-7,107,-6', 'segments,poles,odc,odp', 1])
-    expect(screen.getByText('Map: 10 features')).toBeTruthy()
+    expect(await screen.findByText('2 dari 1001 fitur dimuat')).toBeTruthy()
+    expect(map).toHaveBeenCalledTimes(2)
+    expect(map.mock.calls[0].slice(0, 4)).toEqual([alpha, '106,-7,107,-6', 'segments,poles,odc,odp,areas,references', 1])
+    expect(screen.getByText('Map: 2 features')).toBeTruthy()
   })
   it('searches network across entity and focuses selected result on map', async () => {
     const search = vi.spyOn(atlasApi.network, 'search').mockResolvedValue({ data: [

@@ -15,7 +15,7 @@ export function SettingsPage() {
     </>} />
     <PolicyCard<NamingPolicy> policyKey="naming-policy" title="Standar nama kabel resmi" fields={(value, set) => <>
       <Field name="policy-pattern" label="Pola regex RE2 perusahaan (full match)" value={value.pattern ?? ''} onChange={(pattern) => set({ ...value, pattern: pattern || null })} required={value.approved} />
-      <label className="form-check"><input className="form-check-input" type="checkbox" checked={value.approved} onChange={(event) => set({ ...value, approved: event.target.checked })} />Usulkan aktivasi standar nama setelah approval</label><p className="form-text">Ini bukan persetujuan pengaju. Unik per entitas; tidak menyediakan pola resmi rekaan dan tidak otomatis mengganti nama lama.</p>
+       <label className="form-check"><input className="form-check-input" type="checkbox" checked={value.approved} onChange={(event) => set({ ...value, approved: event.target.checked })} />Usulkan aktivasi standar nama setelah approval</label><p className="form-text">Template mengikuti nama kabel KML yang diberikan: huruf, angka, spasi/baris baru, underscore, hyphen, garis miring, koma, dan titik. Policy tetap nonaktif sampai disetujui reviewer; nama impor tetap persis dari sumber, termasuk duplikat, dan nama lama tidak diubah otomatis.</p>
     </>} />
     <PolicyCard<AnalysisPolicy> policyKey="analysis-policy" title="Radius dan formula estimasi" fields={(value, set) => <>
       <Field name="policy-radius" label="Radius analisis (m)" type="number" min={1} max={100_000} step="1" value={String(value.radiusM)} onChange={(radius) => set({ ...value, radiusM: Number(radius) })} />

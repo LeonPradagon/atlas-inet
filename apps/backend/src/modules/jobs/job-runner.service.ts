@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { and, asc, eq, isNull, sql } from 'drizzle-orm'
 import { APP_CONFIG,type AppConfig } from '../../config/app-config.js'
 import { DatabaseService } from '../../database/database.service.js'
-import { jobRows,jobs } from '../../database/schema/index.js'
+import { auditLogs,jobRows,jobs } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
 import { analysisSchema } from '../analysis/analysis.dto.js'
 import { AnalysisService } from '../analysis/analysis.service.js'
@@ -35,7 +35,12 @@ export class JobRunnerService {
       const [job] = await this.database.db.select().from(jobs).where(eq(jobs.id,claimed.rows[0].id))
       try { await this.process(job) } catch {
         // A database/worker failure is recoverable via the lease. Provider failures are row results.
-        if (job.attempts >= 3) await this.database.db.update(jobs).set({ status:'FAILED',error:'WORKER_FAILED',finishedAt:sql`clock_timestamp()`,leaseToken:null,leaseUntil:null }).where(and(eq(jobs.id,job.id),eq(jobs.leaseToken,job.leaseToken!)))
+        if (job.attempts >= 3) await this.database.db.transaction(async (tx) => {
+          const [failed] = await tx.update(jobs).set({ status:'FAILED',error:'WORKER_FAILED',finishedAt:sql`clock_timestamp()`,leaseToken:null,leaseUntil:null })
+            .where(and(eq(jobs.id,job.id),eq(jobs.leaseToken,job.leaseToken!))).returning()
+          if (failed) await tx.insert(auditLogs).values({ entityId: job.entityId, actorId: 'worker', action: 'JOB_FAILED', resourceId: job.id,
+            details: { type: job.type, status: failed.status, reason: 'WORKER_FAILED' } })
+        })
       }
       return true
     } finally {
@@ -52,7 +57,12 @@ export class JobRunnerService {
   private async process(job: Job) {
     const permission = jobPermission(job)
     try { await this.access.requireEntityPermission(job.ownerId,job.entityId,permission) } catch {
-      await this.database.db.update(jobs).set({ status:'FAILED',error:'PERMISSION_REVOKED',finishedAt:sql`clock_timestamp()`,leaseToken:null,leaseUntil:null }).where(and(eq(jobs.id,job.id),eq(jobs.leaseToken,job.leaseToken!)))
+      await this.database.db.transaction(async (tx) => {
+        const [failed] = await tx.update(jobs).set({ status:'FAILED',error:'PERMISSION_REVOKED',finishedAt:sql`clock_timestamp()`,leaseToken:null,leaseUntil:null })
+          .where(and(eq(jobs.id,job.id),eq(jobs.leaseToken,job.leaseToken!))).returning()
+        if (failed) await tx.insert(auditLogs).values({ entityId: job.entityId, actorId: 'worker', action: 'JOB_FAILED', resourceId: job.id,
+          details: { type: job.type, status: failed.status, reason: 'PERMISSION_REVOKED' } })
+      })
       return
     }
     if (job.cancelRequestedAt) { await this.checkpoint(job,null,null); return }
@@ -71,6 +81,8 @@ export class JobRunnerService {
       if (!current) return // Fencing: stale workers cannot persist results or counters.
       if (current.cancelRequestedAt) {
         await tx.update(jobs).set({ status:'CANCELLED',finishedAt:sql`clock_timestamp()`,leaseToken:null,leaseUntil:null }).where(eq(jobs.id,job.id))
+        await tx.insert(auditLogs).values({ entityId: current.entityId, actorId: 'worker', action: 'JOB_CANCELLED', resourceId: current.id,
+          details: { type: current.type, completed: current.completed, total: current.total } })
         return
       }
       let succeeded = current.succeeded
@@ -82,8 +94,12 @@ export class JobRunnerService {
       } else if (current.type === 'UTILIZATION_EXPORT') succeeded=1
       const completed = succeeded+failed
       const done = completed === current.total
-      await tx.update(jobs).set({ succeeded,failed,completed,status:done ? failed ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED' : 'QUEUED',
+      const status = done ? failed ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED' : 'QUEUED'
+      await tx.update(jobs).set({ succeeded,failed,completed,status,
         output:current.type === 'UTILIZATION_EXPORT' ? result : null,finishedAt:done ? sql`clock_timestamp()` : null,leaseToken:null,leaseUntil:null }).where(eq(jobs.id,job.id))
+      if (done) await tx.insert(auditLogs).values({ entityId: current.entityId, actorId: 'worker',
+        action: current.type === 'UTILIZATION_EXPORT' ? 'REPORT_EXPORT_COMPLETED' : 'ANALYSIS_JOB_COMPLETED', resourceId: current.id,
+        details: { type: current.type, status, total: current.total, succeeded, failed } })
     })
   }
 }

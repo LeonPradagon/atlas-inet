@@ -4,13 +4,13 @@ import { errorMessage } from '../shared/api'
 import { domainKey, useEntityScope } from '../shared/EntityScope'
 import type { PageMeta } from '../shared/domain-types'
 
-export function QueryState({ query, empty, children }: { query: { isPending: boolean; isError: boolean; error: unknown; refetch: () => unknown }; empty?: boolean; children: ReactNode }) {
+export function QueryState({ query, empty, emptyMessage = 'Belum ada data pada lingkup ini.', children }: { query: { isPending: boolean; isError: boolean; error: unknown; refetch: () => unknown }; empty?: boolean; emptyMessage?: string; children: ReactNode }) {
   if (query.isPending) return <p role="status"><span className="spinner-border spinner-border-sm me-2" />Memuat data…</p>
   if (query.isError) return <div className="alert alert-danger" role="alert">{errorMessage(query.error)} <button className="btn btn-sm btn-outline-danger" onClick={() => void query.refetch()}>Coba lagi</button></div>
-  if (empty) return <p className="text-secondary" role="status">Belum ada data pada lingkup ini.</p>
+  if (empty) return <p className="text-secondary" role="status">{emptyMessage}</p>
   return children
 }
-export function PermissionNotice() { return <div className="alert alert-warning" role="status">Entitas belum dipilih atau izin fitur ini belum diberikan. Hubungi administrator.</div> }
+export function PermissionNotice() { return <div className="alert alert-warning" role="status">Akun belum memiliki akses ke entitas atau izin fitur ini. Hubungi administrator.</div> }
 export function Pagination({ page, meta, setPage }: { page: number; meta?: PageMeta; setPage: (page: number) => void }) {
   if (!meta) return null
   return <div className="d-flex align-items-center justify-content-between mt-3 gap-2"><span className="small">Halaman {page} · {meta.total} data</span><div className="btn-group"><button className="btn btn-outline-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Sebelumnya</button><button className="btn btn-outline-secondary btn-sm" disabled={page * meta.pageSize >= meta.total} onClick={() => setPage(page + 1)}>Berikutnya</button></div></div>

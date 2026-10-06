@@ -103,7 +103,8 @@ export class NetworkRepository {
     const layerQueries: Record<MapQuery['layers'][number], SQL> = {
       segments: sql`SELECT s.id, s.owner_entity_id, s.dataset_id, s.cable_name AS name,
         'segments'::text AS layer, ST_CollectionExtract(ST_Intersection(s.geometry, ${bounds}), 2) AS geometry,
-        jsonb_build_object('segmentCode', s.segment_code, 'status', s.status, 'capacityValidated', s.capacity_validated) AS extra
+        jsonb_build_object('segmentCode', s.segment_code, 'status', s.status, 'capacityValidated', s.capacity_validated,
+          'sourceLengthM', ST_Length(s.geometry::geography)) AS extra
         FROM network_segments s WHERE s.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(s.geometry, ${bounds})`,
       poles: sql`SELECT p.id, p.owner_entity_id, p.dataset_id, p.code AS name, 'poles'::text AS layer,
         p.geometry, jsonb_build_object('heightM', p.height_m) AS extra
@@ -121,7 +122,8 @@ export class NetworkRepository {
       references: sql`SELECT r.id, r.owner_entity_id, r.dataset_id, r.name, 'references'::text AS layer,
         CASE WHEN ST_GeometryType(r.geometry) = 'ST_Point' THEN r.geometry
           ELSE ST_CollectionExtract(ST_Intersection(r.geometry, ${bounds}), 2) END AS geometry,
-        jsonb_build_object('referenceOnly', true, 'operationalAsset', false, 'attributes', r.properties) AS extra
+        jsonb_build_object('referenceOnly', true, 'operationalAsset', false, 'attributes', r.properties,
+          'sourceLengthM', CASE WHEN ST_GeometryType(r.geometry) = 'ST_Point' THEN NULL ELSE ST_Length(r.geometry::geography) END) AS extra
         FROM reference_features r WHERE r.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(r.geometry, ${bounds})`,
     }
     const result = await this.database.db.execute<{ features: unknown[]; total: number }>(sql`

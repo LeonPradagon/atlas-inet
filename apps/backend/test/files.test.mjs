@@ -29,6 +29,12 @@ test('KML namespace/folder traversal separates ODC, ODP and lines without invent
   assert.ok(result.referenceFeatures.every((feature) => feature.assetRowValid))
   assert.equal(result.rows[0].installedCoreCount,undefined)
 })
+test('KML cable labels are detected from Placemark name or cable_name ExtendedData exactly',async () => {
+  const xml='<kml><Document><Placemark id="placemark-id"><name>DB24-FDT10-CWI-LINE-C 1500</name><LineString><coordinates>106.8,-6.2 106.9,-6.2</coordinates></LineString></Placemark><Placemark id="metadata-id"><ExtendedData><Data name="cable_name"><value>FDR-24C-GNB01 950</value></Data><Data name="code"><value>FDR-CODE</value></Data></ExtendedData><LineString><coordinates>106.8,-6.3 106.9,-6.3</coordinates></LineString></Placemark></Document></kml>'
+  const result=await parseAssetFile(file('cable-names.kml',Buffer.from(xml)))
+  assert.equal(result.errors.length,0)
+  assert.deepEqual(result.rows.map((row)=>row.cableName),['DB24-FDT10-CWI-LINE-C 1500','FDR-24C-GNB01 950'])
+})
 test('KML rejects invalid geometry and stages valid unmapped geometry as reference',async () => {
   for (const shape of ['<LineString><coordinates>106,0 106,0</coordinates></LineString>','<Point><coordinates>,0</coordinates></Point>','<Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString>','<MultiGeometry><Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString></MultiGeometry>']) {
     const result=await parseAssetFile(file('bad.kml',Buffer.from(`<kml><Placemark id="bad"><name>Test</name>${shape}</Placemark></kml>`)),{ '1':{ kind:shape.startsWith('<Point>') ? 'ODP' : 'SEGMENT' } })

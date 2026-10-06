@@ -243,6 +243,8 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       const all = await (await get(`/map?${viewport}`)).json()
       assert.equal(all.meta.total, 8)
       assert.deepEqual([...new Set(all.data.features.map((feature) => feature.properties.layer))].sort(), ['odc', 'odp', 'poles', 'segments'])
+      const mainLine = all.data.features.find((feature) => feature.properties.id === main.id)
+      assert.ok(mainLine.properties.sourceLengthM > 10_000)
       const combined = await (await get(`/map?${viewport}&layers=odc,odp,odc`)).json()
       assert.equal(combined.meta.total, 2)
       assert.deepEqual(combined.meta.layers, ['odc', 'odp'])
@@ -254,6 +256,27 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       assert.equal(second.data.features.length, 3)
       assert.equal(first.meta.total, second.meta.total)
       assert.equal(new Set([...first.data.features, ...second.data.features].map((feature) => feature.id)).size, 6)
+      const largePage = await get(`/map?${viewport}&pageSize=1000`)
+      assert.equal(largePage.status, 200)
+      assert.equal((await largePage.json()).meta.pageSize, 1000)
+    })
+    await t.test('reference placemark map features expose full source-line geodesic length', async () => {
+      const [referenceLine] = await db.insert(schema.referenceFeatures).values({
+        ownerEntityId: alpha.entityId, datasetId: aDataset.id, externalId: 'placemark-line-length', name: 'KML cable trace',
+        properties: { FCODE: 'LINE' }, geometry: geom('LineString', [[106.82, -6.2], [106.84, -6.2]]),
+        sourceSystem: 'test-fixture', sourceFile: 'fixture.kml', createdBy: alice.user.id,
+      }).returning()
+      try {
+        const mapped = await (await get(`/map?${viewport}&layers=references`)).json()
+        const feature = mapped.data.features.find((item) => item.properties.id === referenceLine.id)
+        assert.ok(feature)
+        assert.equal(feature.properties.name, 'KML cable trace')
+        assert.equal(feature.properties.referenceOnly, true)
+        assert.equal(feature.properties.operationalAsset, false)
+        assert.ok(Math.abs(feature.properties.sourceLengthM - 2220) < 20)
+      } finally {
+        await db.delete(schema.referenceFeatures).where(sql`id=${referenceLine.id}::uuid`)
+      }
     })
     await t.test('draft datasets never appear in published list/map or detail', async () => {
       assert.equal((await get(`/segments/${draftSegment.id}`)).status, 404)
@@ -304,6 +327,7 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
         `${viewport}&sort=secret`, `${viewport}&status=UNKNOWN`,
       ]
       for (const query of invalidQueries) assert.equal((await get(`/segments?${query}`)).status, 400, query)
+      assert.equal((await get(`/map?${viewport}&pageSize=1001`)).status, 400)
       for (const layer of ['odcOdp', '', 'secret']) assert.equal((await get(`/map?${viewport}&layers=${layer}`)).status, 400)
       assert.equal((await get('/segments/not-a-uuid')).status, 400)
       const empty = await (await get(`/map?entityId=${alpha.entityId}&bbox=0,0,1,1`)).json()

@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Param, Post, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Query, Req, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { z } from 'zod'
-import { parseInput } from '../../common/domain-input.js'
+import { entityPageSchema, parseInput } from '../../common/domain-input.js'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
 import { uploadLimits, validateUpload, type UploadFile } from '../files/tabular-files.js'
 import { ImportsService } from './imports.service.js'
@@ -10,6 +10,11 @@ const uploadSchema = z.object({ entityId: z.uuid(), sourceSystem: z.string().tri
 @UseGuards(AuthSessionGuard)
 export class ImportsController {
   constructor(private readonly imports: ImportsService) {}
+  @Get()
+  list(@Req() req: AuthenticatedRequest, @Query() query: unknown) {
+    const input = parseInput(entityPageSchema, query)
+    return this.imports.list(req.authSession.user.id, input.entityId, input.page, input.pageSize)
+  }
   @Post()
   @UseInterceptors(FileInterceptor('file', { limits: uploadLimits }))
   preview(@Req() req: AuthenticatedRequest, @UploadedFile() file: UploadFile | undefined, @Body() body: unknown) {
@@ -30,11 +35,11 @@ export class ImportsController {
     return this.imports.confirmRow(req.authSession.user.id, parseInput(z.uuid(), id), parseInput(z.coerce.number().int().positive(), rowNumber), input.lookupId, input.candidateIndex)
   }
   @Post(':id/publish')
-  publish(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Body() body: unknown) {
-    return this.imports.publish(req.authSession.user.id, parseInput(z.uuid(), id), parseInput(z.object({ version: z.string().trim().min(1).max(100) }).strict(), body).version)
+  publish(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return this.imports.publish(req.authSession.user.id, parseInput(z.uuid(), id))
   }
   @Post(':id/publish-areas')
-  publishAreas(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Body() body: unknown) {
-    return this.imports.publishAreas(req.authSession.user.id, parseInput(z.uuid(), id), parseInput(z.object({ version: z.string().trim().min(1).max(100) }).strict(), body).version)
+  publishAreas(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+    return this.imports.publishAreas(req.authSession.user.id, parseInput(z.uuid(), id))
   }
 }

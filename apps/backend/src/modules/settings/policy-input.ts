@@ -11,8 +11,9 @@ export const analysisPolicySchema = z.object({ radiusM: z.number().int().min(1).
 export const settingKeySchema = z.enum(['booking-policy', 'naming-policy', 'analysis-policy'])
 export type SettingKey = z.infer<typeof settingKeySchema>
 export type BookingPolicy = z.infer<typeof bookingPolicySchema>
+export const DEFAULT_NAMING_POLICY_PATTERN = '[A-Za-z0-9_\\s.,/-]+'
 export const approvalPermission = (key: SettingKey) => key === 'analysis-policy' ? 'settings.approve-engineering' : 'settings.approve-operational'
-export const defaultPolicy = (key: SettingKey) => key === 'booking-policy' ? { duration: 1, unit: 'MONTH' } : key === 'naming-policy' ? { approved: false, pattern: null, uniquePerEntity: true } : { radiusM: 5000, formulaApproved: false, slackPercent: null, extraLengthM: null, maxDetourPercent: null }
+export const defaultPolicy = (key: SettingKey) => key === 'booking-policy' ? { duration: 1, unit: 'MONTH' } : key === 'naming-policy' ? { approved: false, pattern: DEFAULT_NAMING_POLICY_PATTERN, uniquePerEntity: true } : { radiusM: 5000, formulaApproved: false, slackPercent: null, extraLengthM: null, maxDetourPercent: null }
 
 export function parsePolicy(key: SettingKey, input: unknown): Record<string, unknown> {
   const value = key === 'booking-policy' ? parseInput(bookingPolicySchema, input) : key === 'naming-policy' ? parseInput(namingPolicySchema, input) : parseInput(analysisPolicySchema, input)

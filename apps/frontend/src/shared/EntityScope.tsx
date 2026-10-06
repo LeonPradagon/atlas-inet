@@ -1,16 +1,15 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { atlasApi, currentUserQueryKey } from './api'
 import type { CurrentUser, CurrentUserResponse } from './api'
 import type { EntityAccess } from './domain-types'
 
-export function resolveEntity(access: EntityAccess[], requested: string): EntityAccess | undefined {
-  return access.find((entity) => entity.id === requested) ?? access[0]
+export function resolveEntity(access: EntityAccess[]): EntityAccess | undefined {
+  return access[0]
 }
-const ScopeContext = createContext<{ entity?: EntityAccess; entities: EntityAccess[]; user?: CurrentUser; select: (id: string) => void; can: (permission: string) => boolean } | null>(null)
+const ScopeContext = createContext<{ entity?: EntityAccess; user?: CurrentUser; can: (permission: string) => boolean } | null>(null)
 export function EntityScopeProvider({ children }: { children: ReactNode }) {
   const client = useQueryClient()
-  const [requested, setRequested] = useState('')
   const session = useQuery<CurrentUserResponse>({ queryKey: currentUserQueryKey, queryFn: ({ signal }) => atlasApi.auth.currentUser(signal), retry: false, staleTime: 30_000 })
   useEffect(() => {
     const expire = () => {
@@ -18,14 +17,13 @@ export function EntityScopeProvider({ children }: { children: ReactNode }) {
       client.removeQueries({ queryKey: ['atlas'] })
       // Reset removes stale identity immediately while the session is rechecked.
       void client.resetQueries({ queryKey: currentUserQueryKey })
-      setRequested('')
     }
     window.addEventListener('atlas-session-expired', expire)
     return () => window.removeEventListener('atlas-session-expired', expire)
   }, [client])
   const entities = session.isSuccess ? session.data.entityAccess ?? [] : []
-  const entity = resolveEntity(entities, requested)
-  return <ScopeContext.Provider value={{ entity, entities, user: session.isSuccess ? session.data.user : undefined, select: setRequested, can: (permission) => Boolean(entity?.permissions.includes(permission)) }}>{children}</ScopeContext.Provider>
+  const entity = resolveEntity(entities)
+  return <ScopeContext.Provider value={{ entity, user: session.isSuccess ? session.data.user : undefined, can: (permission) => Boolean(entity?.permissions.includes(permission)) }}>{children}</ScopeContext.Provider>
 }
 export function useEntityScope() {
   const context = useContext(ScopeContext)

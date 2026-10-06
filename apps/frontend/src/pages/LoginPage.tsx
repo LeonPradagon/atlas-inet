@@ -1,7 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
-import { ApiStatusBadge } from '../components/ApiStatusBadge'
 import { ApiError, atlasApi, currentUserQueryKey } from '../shared/api'
 
 export function LoginPage() {
@@ -45,7 +44,7 @@ export function LoginPage() {
           <span className="text-secondary">Asset Tracking &amp; Network Intelligence</span>
         </div>
         <div className="card-body p-4">
-          <div className="d-flex justify-content-between align-items-center mb-3"><h2 className="h5 mb-0">Masuk ke akun</h2><ApiStatusBadge /></div>
+          <h2 className="h5 mb-3">Masuk ke akun</h2>
           <p className="text-secondary small">Login diperlukan untuk mengakses dashboard dan fitur internal. Gunakan akun perusahaan yang telah diaktifkan administrator.</p>
           <form onSubmit={submitLogin}>
             <div className="mb-3"><label className="form-label" htmlFor="login-email">Email kerja</label><input className="form-control" id="login-email" name="email" type="email" autoComplete="username" required /></div>

@@ -10,7 +10,7 @@ describe('central API contracts', () => {
     axiosClient.defaults.adapter = adapter
     const signal = new AbortController().signal
     await atlasApi.network.map('alpha', '1,2,3,4', 'odc,odp', 2, signal)
-    expect(adapter.mock.calls[0][0]).toMatchObject({ url: API_ENDPOINTS.networkMap, params: { entityId: 'alpha', bbox: '1,2,3,4', layers: 'odc,odp', page: 2, pageSize: 100 }, signal, withCredentials: true })
+    expect(adapter.mock.calls[0][0]).toMatchObject({ url: API_ENDPOINTS.networkMap, params: { entityId: 'alpha', bbox: '1,2,3,4', layers: 'odc,odp', page: 2, pageSize: 1000 }, signal, withCredentials: true })
     await atlasApi.settings.propose('alpha', 'booking-policy', 9, { duration: 1, unit: 'MONTH' }, 'Fixture reason', 'approval-key')
     expect(adapter.mock.calls[1][0].headers.get('If-Match')).toBe('9')
     expect(adapter.mock.calls[1][0].headers.get('Idempotency-Key')).toBe('approval-key')

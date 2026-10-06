@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { initialize, PushMenu, teardown, Treeview } from 'admin-lte'
 import { atlasApi, currentUserQueryKey } from '../shared/api'
-import { domainKey, pagePermissions, useEntityScope } from '../shared/EntityScope'
+import { pagePermissions, useEntityScope } from '../shared/EntityScope'
 import { PermissionNotice } from '../components/DomainUi'
 import { NotificationBell } from '../components/NotificationBell'
 
@@ -47,7 +47,7 @@ const navigationGroups = [
     icon: 'bi-gear',
     items: [
       { label: 'Pengaturan', to: '/settings', icon: 'bi-gear' },
-      { label: 'Pengguna & Audit', to: '/access-audit', icon: 'bi-people' },
+      { label: 'Audit Log', to: '/access-audit', icon: 'bi-journal-text' },
     ],
   },
 ] as const
@@ -62,7 +62,7 @@ const pageTitles: Record<string, string> = {
   '/reports': 'Laporan & Ekspor',
   '/notifications': 'Notifikasi',
   '/settings': 'Pengaturan',
-  '/access-audit': 'Pengguna & Audit',
+  '/access-audit': 'Audit Log',
 }
 
 export function AppShell() {
@@ -93,7 +93,6 @@ export function AppShell() {
       setSessionMessage('')
       await queryClient.cancelQueries({ queryKey: ['atlas'] })
       queryClient.removeQueries({ queryKey: ['atlas'] })
-      scope.select('')
       await queryClient.resetQueries({ queryKey: currentUserQueryKey })
       await navigate({ to: '/login' })
     },
@@ -214,12 +213,6 @@ export function AppShell() {
             </li>
           </ul>
           <span className="navbar-brand mb-0 d-lg-none fw-light">ATLAS</span>
-          {scope.entities.length !== 1 && <div className="ms-2"><label htmlFor="active-entity" className="visually-hidden">Lingkup entitas</label><select id="active-entity" className="form-select form-select-sm" value={scope.entity?.id ?? ''} disabled={!scope.entities.length} onChange={(event) => {
-            const previous = scope.entity?.id
-            void queryClient.cancelQueries({ queryKey: domainKey(previous, scope.user?.id) })
-            queryClient.removeQueries({ queryKey: domainKey(previous, scope.user?.id) })
-            scope.select(event.target.value)
-          }}>{!scope.entities.length && <option value="">Belum ada grant entitas</option>}{scope.entities.map((entity) => <option key={entity.id} value={entity.id}>{entity.code} · {entity.name}</option>)}</select></div>}
           <ul className="navbar-nav ms-auto align-items-center">
             <NotificationBell />
             {currentUserQuery.data

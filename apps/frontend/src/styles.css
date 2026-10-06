@@ -74,7 +74,45 @@ body {
   margin-bottom: 1rem;
 }
 
+.import-preview-dialog {
+  width: min(96vw, 76rem);
+  max-width: unset;
+  max-height: 90vh;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--bs-border-radius-lg);
+  background: var(--bs-body-bg);
+  color: var(--bs-body-color);
+  box-shadow: 0 1rem 3rem #0004;
+}
+
+.import-preview-dialog::backdrop {
+  background: #10182899;
+}
+
+.import-preview-dialog-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--bs-border-color);
+  background: var(--bs-body-bg);
+}
+
+.import-preview-dialog-body {
+  max-height: calc(90vh - 4.5rem);
+  padding: 0 1.25rem 1.25rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .network-map-canvas {
+  position: relative;
   width: 100%;
   height: min(68vh, 42rem);
   min-height: 24rem;
@@ -84,8 +122,39 @@ body {
   z-index: 0;
 }
 
+.network-map-canvas:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: #eaf0ed;
+}
+
+.network-map-canvas-fallback-fullscreen {
+  position: fixed !important;
+  inset: 0;
+  z-index: 2000 !important;
+  width: 100vw;
+  height: 100vh;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: #eaf0ed;
+}
+
+.network-map-fullscreen {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 3;
+  box-shadow: 0 1px 4px #0004;
+}
+
 .maplibregl-popup-content .network-map-popup-title {
   display: block;
+  flex: 1;
+  min-width: 0;
   padding: 0.4rem 0.6rem;
   border-left: 4px solid #ffb800;
   border-radius: 0.25rem;
@@ -93,6 +162,41 @@ body {
   color: #17202a;
   font-size: 1rem;
   line-height: 1.35;
+}
+
+.network-map-popup-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.network-map-popup-close {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.network-map-popup-close svg {
+  display: block;
+}
+
+.network-map-hover-popup .maplibregl-popup-content {
+  padding: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+.network-map-line-hover {
+  display: grid;
+  gap: 0.2rem;
+  color: #17202a;
+  font-size: 0.85rem;
+}
+
+.network-map-line-hover span {
+  color: #344054;
 }
 
 .maplibregl-popup-content .network-map-popup-title[tabindex] {

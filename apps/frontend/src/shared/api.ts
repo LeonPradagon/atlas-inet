@@ -1,5 +1,5 @@
-import axios, { type AxiosInstance, type AxiosRequestConfig } from 'axios'
-import type { AnalysisHistory, AnalysisResult, ApiResponse, AuditRecord, Booking, CableType, CustomerInput, EntityAccess, ImportPreview, Job, JobRow, NameHistory, Notification, PolicyChangeRequest, Segment, Setting, UploadPreview, Utilization, WaitingEntry } from './domain-types'
+import axios, { type AxiosInstance } from 'axios'
+import type { AnalysisHistory, AnalysisResult, ApiResponse, AuditRecord, Booking, CableType, CustomerInput, EntityAccess, ImportPreview, ImportPreviewSummary, Job, JobRow, NameHistory, Notification, PolicyChangeRequest, Segment, Setting, UploadPreview, Utilization, WaitingEntry } from './domain-types'
 import type { NetworkMapFeature } from '../components/NetworkMapCanvas'
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -10,8 +10,6 @@ export const API_SERVICE_BASE = normalizeBaseUrl(import.meta.env.VITE_API_BASE_U
 export const AUTH_SERVICE_BASE = normalizeBaseUrl(import.meta.env.VITE_AUTH_BASE_URL || '/api/auth')
 
 export const API_ENDPOINTS = {
-  healthLive: `${API_SERVICE_BASE}/health/live`,
-  healthReady: `${API_SERVICE_BASE}/health/ready`,
   currentUser: `${API_SERVICE_BASE}/me`,
   signInEmail: `${AUTH_SERVICE_BASE}/sign-in/email`,
   signOut: `${AUTH_SERVICE_BASE}/sign-out`,
@@ -125,7 +123,7 @@ export const atlasApi = {
     nameHistory: (id: string, page: number, signal?: AbortSignal) => get<NameHistory[]>(`${API_ENDPOINTS.segments}/${encodeURIComponent(id)}/name-history`, { page }, signal),
     segments: (entityId: string, page: number, signal?: AbortSignal) => get<Segment[]>(API_ENDPOINTS.segments, { entityId, page, pageSize: 25, bbox: '-180,-90,180,90' }, signal),
     segment: (id: string, signal?: AbortSignal) => get<Segment>(`${API_ENDPOINTS.segments}/${encodeURIComponent(id)}`, undefined, signal),
-    map: (entityId: string, bbox: string, layers: string, page: number, signal?: AbortSignal) => get<{ type: 'FeatureCollection'; features: NetworkMapFeature[] }>(API_ENDPOINTS.networkMap, { entityId, bbox, layers, page, pageSize: 100 }, signal),
+    map: (entityId: string, bbox: string, layers: string, page: number, signal?: AbortSignal) => get<{ type: 'FeatureCollection'; features: NetworkMapFeature[] }>(API_ENDPOINTS.networkMap, { entityId, bbox, layers, page, pageSize: 1000 }, signal),
     search: (entityId: string, q: string, signal?: AbortSignal) => get<NetworkMapFeature[]>(API_ENDPOINTS.networkSearch, { entityId, q, limit: 15 }, signal),
     update: async (id: string, version: number, fields: object) => (await axiosClient.patch<ApiResponse<{ id: string; version: number }>>(`${API_ENDPOINTS.segments}/${encodeURIComponent(id)}`, fields, { headers: { 'If-Match': String(version) } })).data,
   },
@@ -148,11 +146,13 @@ export const atlasApi = {
     submit: (uploadId: string) => post<{ id: string }>(`${API_ENDPOINTS.analysis}/jobs`, { uploadId, processValidRows: true }),
   },
   imports: {
+    list: (entityId: string, page: number, signal?: AbortSignal) => get<ImportPreviewSummary[]>(API_ENDPOINTS.imports, { entityId, page }, signal),
+    get: (id: string, signal?: AbortSignal) => get<ImportPreview>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}`, undefined, signal),
     geocodeRow: (id: string, rowNumber: number) => post<ImportPreview>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/rows/${rowNumber}/geocode`),
     confirmCoordinates: (id: string, rowNumber: number, lookupId: string, candidateIndex: number) => post<ImportPreview>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/rows/${rowNumber}/confirm-coordinates`, { lookupId, candidateIndex }),
     preview: (entityId: string, sourceSystem: string, file: File, mappings: string) => { const form = new FormData(); form.set('entityId', entityId); form.set('sourceSystem', sourceSystem); form.set('file', file); if (mappings.trim()) form.set('mappings', mappings); return post<ImportPreview>(API_ENDPOINTS.imports, form) },
-    publish: (id: string, version: string) => post<{ id: string; datasetId: string; status: string }>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/publish`, { version }),
-    publishAreas: (id: string, version: string) => post<ImportPreview>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/publish-areas`, { version }),
+    publish: (id: string) => post<{ id: string; datasetId: string; status: string }>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/publish`),
+    publishAreas: (id: string) => post<ImportPreview>(`${API_ENDPOINTS.imports}/${encodeURIComponent(id)}/publish-areas`),
   },
   jobs: {
     get: (id: string, signal?: AbortSignal) => get<Job>(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}`, undefined, signal),
@@ -175,16 +175,7 @@ export const atlasApi = {
     requests: (entityId: string, page: number, status: string, signal?: AbortSignal) => get<PolicyChangeRequest[]>(API_ENDPOINTS.policyRequests, { entityId, page, status: status || undefined }, signal),
     decide: (id: string, action: 'approve' | 'reject' | 'cancel', reason: string) => post<PolicyChangeRequest>(`${API_ENDPOINTS.policyRequests}/${encodeURIComponent(id)}/${action}`, { reason }),
   },
-  audit: (entityId: string, page: number, signal?: AbortSignal) => get<AuditRecord[]>(API_ENDPOINTS.audit, { entityId, page }, signal),
-  health: {
-    async readiness(config?: AxiosRequestConfig): Promise<boolean> {
-      await axiosClient.get(API_ENDPOINTS.healthReady, {
-        ...config,
-        validateStatus: (status) => (status >= 200 && status < 300) || status === 304,
-      })
-      return true
-    },
-  },
+  audit: (entityId: string, page: number, filters: { search?: string; action?: string; from?: string; to?: string }, signal?: AbortSignal) => get<AuditRecord[]>(API_ENDPOINTS.audit, { entityId, page, ...filters }, signal),
   auth: {
     async signIn(email: string, password: string): Promise<void> {
       await axiosClient.post(API_ENDPOINTS.signInEmail, { email, password, callbackURL: '/' })

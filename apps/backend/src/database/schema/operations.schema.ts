@@ -116,6 +116,7 @@ export const importPreviews = pgTable('import_previews', {
   sourceName: text('source_name').notNull(), sourceSystem: text('source_system').notNull(),
   rows: jsonb('rows').$type<Record<string, unknown>[]>().notNull(), areas: jsonb('areas').$type<Record<string, unknown>[]>().notNull().default([]), referenceFeatures: jsonb('reference_features').$type<Record<string, unknown>[]>().notNull().default([]), errors: jsonb('errors').$type<Record<string, unknown>[]>().notNull(),
   status: text('status').notNull().default('PREVIEW'), datasetId: uuid('dataset_id'), areasPublishedAt: timestamp('areas_published_at', { withTimezone: true }),
+  autoPublishError: text('auto_publish_error'),
   baseFingerprint: text('base_fingerprint').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(), publishedAt: timestamp('published_at', { withTimezone: true }),
 }, (t) => [index('import_owner_time_idx').on(t.ownerId, t.createdAt)])

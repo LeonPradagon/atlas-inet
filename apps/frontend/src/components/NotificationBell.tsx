@@ -14,19 +14,74 @@ export function NotificationBell() {
   const buttonRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [panelPosition, setPanelPosition] = useState({ top: 0, right: 12 })
+  const [realtime, setRealtime] = useState(false)
   const hasPermission = can('notifications.read')
+  useEffect(() => {
+    if (typeof window.WebSocket !== 'function') {
+      setRealtime(false)
+      return
+    }
+    if (!entity || !user || !hasPermission) {
+      setRealtime(false)
+      return
+    }
+
+    let stopped = false
+    let retry = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let socket: WebSocket | undefined
+    const connect = () => {
+      if (stopped) return
+      setRealtime(false)
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const url = new URL(`${protocol}//${window.location.host}/api/v1/notifications/ws`)
+      url.searchParams.set('entityId', entity.id)
+      socket = new WebSocket(url)
+      socket.onopen = () => {
+        retry = 0
+        setRealtime(true)
+        void queryClient.invalidateQueries({ queryKey: domainKey(entity.id, user.id, 'notifications') })
+      }
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(String(event.data)) as { type?: unknown; entityId?: unknown }
+          if (message.entityId === entity.id && ['notification.created', 'notification.read'].includes(String(message.type))) {
+            void queryClient.invalidateQueries({ queryKey: domainKey(entity.id, user.id, 'notifications') })
+          }
+        } catch { /* Ignore invalid server frames; HTTP queries remain the source of truth. */ }
+      }
+      socket.onerror = () => socket?.close()
+      socket.onclose = () => {
+        if (stopped) return
+        setRealtime(false)
+        const delay = Math.min(30_000, 1000 * 2 ** retry)
+        retry = Math.min(retry + 1, 5)
+        retryTimer = setTimeout(connect, delay)
+      }
+    }
+
+    connect()
+    return () => {
+      stopped = true
+      if (retryTimer) clearTimeout(retryTimer)
+      setRealtime(false)
+      socket?.close(1000, 'Notification scope changed')
+    }
+  }, [entity?.id, user?.id, hasPermission, queryClient])
+
   const unreadQuery = useQuery({
     queryKey: domainKey(entity?.id, user?.id, 'notifications', 'unread-count'),
     queryFn: ({ signal }) => atlasApi.notifications.unreadCount(entity!.id, signal),
     enabled: Boolean(entity) && hasPermission,
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: realtime ? false : 30_000,
   })
   const listQuery = useQuery({
     queryKey: domainKey(entity?.id, user?.id, 'notifications', 'preview'),
     queryFn: ({ signal }) => atlasApi.notifications.list(entity!.id, 1, signal),
     enabled: Boolean(entity) && hasPermission && open,
     staleTime: 15_000,
+    refetchInterval: open && !realtime ? 30_000 : false,
   })
   const markRead = useMutation({
     mutationFn: (id: string) => atlasApi.notifications.read(id),
@@ -87,7 +142,10 @@ export function NotificationBell() {
       >
         <div className="dropdown-header d-flex justify-content-between align-items-center">
           <strong>Notifikasi</strong>
-          {unreadCount > 0 && <span className="badge text-bg-danger">{unreadCount} belum dibaca</span>}
+          <span className="d-flex align-items-center gap-2">
+            <span className={`badge ${realtime ? 'text-bg-success' : 'text-bg-secondary'}`} role="status">{realtime ? 'Realtime' : 'Polling'}</span>
+            {unreadCount > 0 && <span className="badge text-bg-danger">{unreadCount} belum dibaca</span>}
+          </span>
         </div>
         <div className="notification-preview-list" aria-live="polite">
           {listQuery.isPending && <p className="dropdown-item-text text-secondary mb-0" role="status">Memuat notifikasi…</p>}

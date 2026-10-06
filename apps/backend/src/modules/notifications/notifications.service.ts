@@ -24,8 +24,17 @@ export class NotificationsService {
     const [record] = await this.database.db.select().from(notifications).where(and(eq(notifications.id, id), eq(notifications.recipientId, userId)))
     if (!record) throw new NotFoundException('Notification not found')
     await this.access.requireEntityPermission(userId, record.entityId, 'notifications.read')
-    const [updated] = await this.database.db.update(notifications).set({ readAt: sql`COALESCE(read_at, clock_timestamp())` }).where(eq(notifications.id, id)).returning()
-    return { data: updated }
+    return this.database.db.transaction(async (tx) => {
+      const [updated] = await tx.update(notifications).set({ readAt: sql`clock_timestamp()` })
+        .where(and(eq(notifications.id, id), eq(notifications.recipientId, userId), isNull(notifications.readAt))).returning()
+      if (updated) await tx.execute(sql`SELECT pg_notify('atlas_notifications', ${JSON.stringify({
+        type: 'notification.read', recipientUserId: userId, entityId: updated.entityId, notificationId: updated.id, notificationType: updated.type,
+      })})`)
+      if (updated) return { data: updated }
+      const [current] = await tx.select().from(notifications).where(and(eq(notifications.id, id), eq(notifications.recipientId, userId)))
+      if (!current) throw new NotFoundException('Notification not found')
+      return { data: current }
+    })
   }
   async deliverBatch() {
     return this.database.db.transaction(async (tx) => {
@@ -37,7 +46,12 @@ export class NotificationsService {
           WHERE m.active AND m.entity_id = ${event.entityId}::uuid AND (rp.permission_code = 'notifications.receive'
             OR (m.user_id = ${String(event.payload.presalesUserId ?? event.payload.recipientUserId ?? '')} AND rp.permission_code = 'notifications.read')
             OR (${event.type === 'POLICY_CHANGE_REQUESTED'} AND rp.permission_code = ${String(event.payload.approvalPermission ?? '')}))`)
-        for (const recipient of recipients.rows) await tx.insert(notifications).values({ eventId: event.id, entityId: event.entityId, recipientId: recipient.userId, type: event.type, payload: event.payload }).onConflictDoNothing()
+        for (const recipient of recipients.rows) {
+          const [notification] = await tx.insert(notifications).values({ eventId: event.id, entityId: event.entityId, recipientId: recipient.userId, type: event.type, payload: event.payload }).onConflictDoNothing().returning({ id: notifications.id })
+          if (notification) await tx.execute(sql`SELECT pg_notify('atlas_notifications', ${JSON.stringify({
+            type: 'notification.created', recipientUserId: recipient.userId, entityId: event.entityId, notificationId: notification.id, notificationType: event.type,
+          })})`)
+        }
         await tx.update(outboxEvents).set({ deliveredAt: sql`clock_timestamp()` }).where(eq(outboxEvents.id, event.id))
       }
       return pending.length

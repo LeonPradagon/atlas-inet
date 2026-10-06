@@ -10,6 +10,7 @@ import { loadAppConfig } from './config/app-config.js'
 import { loadEnvironment } from './config/load-env.js'
 import { AppModule } from './app.module.js'
 import { AuthService } from './modules/auth/auth.service.js'
+import { NotificationsRealtimeGateway } from './modules/notifications/notifications-realtime.gateway.js'
 
 async function bootstrap() {
   loadEnvironment()
@@ -56,6 +57,7 @@ async function bootstrap() {
   app.useGlobalFilters(new ApiExceptionFilter())
   app.enableShutdownHooks()
   await app.listen(config.port, '0.0.0.0')
+  await app.get(NotificationsRealtimeGateway).start(app.getHttpServer())
   console.log(JSON.stringify({ event: 'API_LISTENING', port: config.port }))
 }
 

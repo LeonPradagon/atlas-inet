@@ -20,6 +20,16 @@ export async function validateCableName(tx: Transaction, entityId: string, name:
   return setting!.version
 }
 
+/** KML source labels stay exact; return approved policy version only when source label matches it. */
+export async function validateImportedCableName(tx: Transaction, entityId: string, name: string) {
+  const setting = await currentSetting(tx, entityId, 'naming-policy')
+  const policy = namingPolicySchema.parse(setting?.value ?? { approved: false, pattern: null, uniquePerEntity: true })
+  if (policy.approved && policy.pattern && RE2JS.compile(policy.pattern).matches(name)) {
+    return setting!.version
+  }
+  return 0
+}
+
 const metadataSchema = z.object({
   cableName: z.string().trim().min(1).max(200).optional(), cableTypeId: z.uuid().nullable().optional(),
   installedCoreCount: z.number().int().min(1).max(1_000_000).optional(), capacityValidated: z.boolean().optional(),

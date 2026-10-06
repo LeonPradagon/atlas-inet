@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { and, desc, eq, sql } from 'drizzle-orm'
 import { DatabaseService } from '../../database/database.service.js'
-import { analysisResults } from '../../database/schema/index.js'
+import { analysisResults, auditLogs } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
 import { InternalAdapters } from './internal-adapters.js'
 import type { AnalysisInput } from './analysis.dto.js'
@@ -45,12 +45,23 @@ export class AnalysisService {
         ORDER BY ST_Distance(s.geometry::geography,p.geometry::geography),s.id LIMIT 1`)
       const nearest = rows.rows[0]
       result = { status: nearest ? 'OK' : 'NO_NETWORK_IN_RADIUS', coordinates, coordinateSource: input.latitude !== undefined ? 'INPUT_COORDINATES_USED' : 'INTERNAL_GEOCODING', radiusM: policy.radiusM, policyVersion:setting?.version ?? 0, nearest: nearest ?? null, estimationMethod: nearest ? 'GEOMETRIC_PRELIMINARY' : 'NOT_AVAILABLE', nearestNetworkDistanceM: nearest?.distanceM ?? null, estimatedCableLengthM: null, route: null, needsSurvey: true }
-      if (nearest && input.connectionPointId) {
-        const points = await this.database.db.execute<{ geometry: unknown; type: 'ODC' | 'ODP' }>(sql`SELECT ST_AsGeoJSON(p.geometry,15)::jsonb AS geometry, 'ODP'::text AS type FROM odps p JOIN segment_odps l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid AND ${input.connectionPointType !== 'ODC'}
-          UNION ALL SELECT ST_AsGeoJSON(p.geometry,15)::jsonb, 'ODC'::text FROM odcs p JOIN segment_odcs l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.id=${input.connectionPointId}::uuid AND ${input.connectionPointType !== 'ODP'}`)
-        if (!points.rows[0]) result.routeStatus = 'CONNECTION_POINT_NOT_VALIDATED'
+      if (nearest) {
+        const points = await this.database.db.execute<{ id: string; code: string; geometry: unknown; type: 'ODC' | 'ODP' }>(sql`SELECT points.id,points.code,ST_AsGeoJSON(points.geometry,15)::jsonb AS geometry,points.type FROM (
+          SELECT p.id,p.code,p.geometry,'ODP'::text AS type FROM odps p JOIN segment_odps l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.owner_entity_id=${input.entityId}::uuid
+          UNION ALL SELECT p.id,p.code,p.geometry,'ODC'::text FROM odcs p JOIN segment_odcs l ON l.asset_id=p.id WHERE l.segment_id=${nearest.segmentId}::uuid AND p.owner_entity_id=${input.entityId}::uuid
+        ) points ORDER BY points.type,points.code,points.id`)
+        const selectedPoint = input.connectionPointId
+          ? points.rows.find((point) => point.id === input.connectionPointId && point.type === input.connectionPointType)
+          : points.rows.length === 1 ? points.rows[0] : undefined
+        if (!input.connectionPointId && points.rows.length > 1) {
+          result.routeStatus = 'CONNECTION_POINT_SELECTION_REQUIRED'
+          result.connectionPointCandidates = points.rows.map(({ id, code, type }) => ({ id, code, type }))
+        } else if (!selectedPoint) result.routeStatus = input.connectionPointId ? 'CONNECTION_POINT_NOT_VALIDATED' : 'NO_VALIDATED_CONNECTION_POINT'
         else {
-          const route = await this.adapters.route(coordinates!, points.rows[0].geometry)
+          result.connectionPointId = selectedPoint.id
+          result.connectionPointCode = selectedPoint.code
+          result.connectionPointType = selectedPoint.type
+          const route = await this.adapters.route(coordinates!, selectedPoint.geometry)
           const detourPercent = route ? route.shortestFeasibleDistanceM === 0 ? route.distanceM === 0 ? 0 : Infinity : (route.distanceM/route.shortestFeasibleDistanceM-1)*100 : null
           const accepted = route && policy.maxDetourPercent !== null && detourPercent !== null && detourPercent<=policy.maxDetourPercent
           result.route = accepted ? route : null
@@ -71,8 +82,12 @@ export class AnalysisService {
     Object.assign(result, geocodingProvenance)
     result.analysisTime = new Date().toISOString()
     if (persist) {
-      const [record] = await this.database.db.insert(analysisResults).values({ entityId: input.entityId, userId, input, result }).returning({ id: analysisResults.id })
-      result.analysisId = record.id
+      await this.database.db.transaction(async (tx) => {
+        const [record] = await tx.insert(analysisResults).values({ entityId: input.entityId, userId, input, result }).returning({ id: analysisResults.id })
+        result.analysisId = record.id
+        await tx.insert(auditLogs).values({ entityId: input.entityId, actorId: userId, action: 'ANALYSIS_CREATED', resourceId: record.id,
+          details: { status: result.status, coordinateSource: result.coordinateSource, routeStatus: result.routeStatus ?? null, policyVersion: result.policyVersion ?? setting?.version ?? 0 } })
+      })
     }
     return result
   }

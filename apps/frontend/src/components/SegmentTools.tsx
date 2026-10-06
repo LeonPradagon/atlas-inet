@@ -40,7 +40,7 @@ export function SegmentDetail({ id, editable = false }: { id: string; editable?:
     <h4>{query.data.data.cableName}</h4><p className="small text-secondary">{query.data.data.segmentCode} · Dataset {query.data.data.datasetVersion} · {query.data.data.status}</p>
     <dl className="row"><dt className="col-sm-4">Tipe / instalasi / sisi</dt><dd className="col-sm-8">{query.data.data.cableType?.name ?? 'Belum diketahui'} / {query.data.data.installationMethod ?? '—'} / {query.data.data.roadSide ?? '—'}</dd></dl>
     <div className="table-responsive"><table className="table table-sm"><tbody>{(['total', 'used', 'booked', 'idle', 'available', 'waitingCount', 'waitingCores'] as const).map((key) => <tr key={key}><th>{key}</th><td>{numberLabel(query.data!.data.capacity[key])}</td></tr>)}</tbody></table></div>
-    <p className="small">Snapshot: {query.data.data.capacity.asOf}. Idle mencakup Booked; antrean tidak mengurangi Available.</p>
+    <p className="small">Snapshot (Asia/Jakarta): {dateLabel(query.data.data.capacity.asOf)}. Idle mencakup Booked; antrean tidak mengurangi Available.</p>
     {Boolean(query.data.data.capacity.expiryPendingCount) && <div className="alert alert-info">{query.data.data.capacity.expiryPendingCount} booking sudah kedaluwarsa efektif dan tidak mengurangi Available; worker belum memperbarui status persisted.</div>}
     {query.data.data.completeness.status !== 'COMPLETE' && <div className="alert alert-warning">Metadata belum lengkap: {query.data.data.completeness.missingFields.join(', ')}</div>}
     <p>Tiang: {query.data.data.assets?.poles.map((p) => `${p.code} (${p.heightM} m)`).join(', ') || 'Tidak tercatat'}</p>

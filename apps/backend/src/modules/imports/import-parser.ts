@@ -137,7 +137,10 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
         if (icon?.href !== undefined) properties.icon = propertyValue(icon.href)
       }
       if (entry.folderPath.length) properties.kmlFolderPath = entry.folderPath.join('/')
-      if (p.name !== undefined && !properties.name) properties.name = propertyValue(p.name)
+      const sourceCableNameValue = metadata.cable_name ?? metadata.cablename ?? metadata.fiber_name ?? metadata.fibername ?? p.name ?? metadata.name
+      const sourceCableName = sourceCableNameValue === undefined ? undefined : propertyValue(sourceCableNameValue)
+      const featureName = sourceCableName || `Placemark ${rowNumber}`
+      if (featureName && !properties.name) properties.name = featureName
       const coords = (value: unknown) => String(value).trim().split(/\s+/).map((pair) => {
         const parts = pair.split(',')
         if (parts.length < 2 || parts.length > 3 || parts.some((v) => !v.trim() || !Number.isFinite(Number(v)))) return [NaN,NaN]
@@ -202,8 +205,8 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
         geometry = { type: 'MultiLineString', coordinates: (Array.isArray(lines) ? lines : [lines]).map((line) => coords((line as Record<string,unknown>).coordinates)) }
       }
       const code = metadata.code ?? p['@_id']
-      input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: `placemark-${rowNumber}`, name: String(p.name ?? `Placemark ${rowNumber}`).trim().slice(0, 500) || `Placemark ${rowNumber}`, geometry, assetRowValid: false, properties } : undefined,
-        row: clean({ kind: metadata.kind ?? (geometry && (geometry as { type: string }).type !== 'Point' ? 'SEGMENT' : undefined), externalId: p['@_id'], code, cableName: p.name, geometry, address: p.address, ...(mappings[String(rowNumber)] ?? {}), rowNumber }) })
+      input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: `placemark-${rowNumber}`, name: featureName.slice(0, 500), geometry, assetRowValid: false, properties } : undefined,
+        row: clean({ kind: metadata.kind ?? (geometry && (geometry as { type: string }).type !== 'Point' ? 'SEGMENT' : undefined), externalId: p['@_id'], code, cableName: sourceCableName, geometry, address: p.address, ...(mappings[String(rowNumber)] ?? {}), rowNumber }) })
     }
   }
   const rows: AssetRow[] = []

@@ -1,5 +1,5 @@
 import { ConflictException, GoneException, HttpException, Injectable, NotFoundException } from '@nestjs/common'
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { DatabaseService } from '../../database/database.service.js'
 import type { Transaction } from '../../database/transaction.js'
 import { analysisUploads, auditLogs, jobRows, jobs } from '../../database/schema/index.js'
@@ -18,7 +18,12 @@ export class JobsService {
   async upload(userId: string, entityId: string, file: UploadFile) {
     await this.access.requireEntityPermission(userId, entityId, 'analysis.bulk')
     const rows = await parseBulkFile(file, entityId)
-    const [upload] = await this.database.db.insert(analysisUploads).values({ ownerId: userId, entityId, rows, sourceName: file.originalname }).returning()
+    const upload = await this.database.db.transaction(async (tx) => {
+      const [record] = await tx.insert(analysisUploads).values({ ownerId: userId, entityId, rows, sourceName: file.originalname }).returning()
+      await tx.insert(auditLogs).values({ entityId, actorId: userId, action: 'ANALYSIS_UPLOAD_CREATED', resourceId: record.id,
+        details: { total: rows.length, valid: rows.filter((row) => !row.error).length, invalid: rows.filter((row) => row.error).length } })
+      return record
+    })
     return { data: { id: upload.id, preview: rows.slice(0,100) }, meta: { total: rows.length, valid: rows.filter((r) => !r.error).length, invalid: rows.filter((r) => r.error).length, previewLimit: 100 } }
   }
   private async quota(tx: Transaction, userId: string) {
@@ -75,7 +80,12 @@ export class JobsService {
   }
   async cancel(userId: string, id: string) {
     await this.authorize(userId,id,true)
-    const [job] = await this.database.db.update(jobs).set({ cancelRequestedAt:sql`COALESCE(cancel_requested_at,clock_timestamp())` }).where(and(eq(jobs.id,id),inArray(jobs.status,['QUEUED','RUNNING']))).returning()
+    const job = await this.database.db.transaction(async (tx) => {
+      const [updated] = await tx.update(jobs).set({ cancelRequestedAt:sql`clock_timestamp()` }).where(and(eq(jobs.id,id),inArray(jobs.status,['QUEUED','RUNNING']),isNull(jobs.cancelRequestedAt))).returning()
+      if (updated) await tx.insert(auditLogs).values({ entityId: updated.entityId, actorId: userId, action: 'JOB_CANCEL_REQUESTED', resourceId: id,
+        details: { type: updated.type, status: updated.status } })
+      return updated
+    })
     return job ? { data:{ id,status:job.status,cancelRequestedAt:job.cancelRequestedAt } } : this.get(userId,id)
   }
   async retry(userId: string, id: string) {
@@ -88,6 +98,8 @@ export class JobsService {
       await this.quota(tx,userId)
       const [job] = await tx.insert(jobs).values({ entityId:original.entityId,ownerId:userId,type:'ANALYSIS',input:{ previousJobId:id },total:rows.length }).returning()
       for (let i=0;i<rows.length;i+=250) await tx.insert(jobRows).values(rows.slice(i,i+250).map((r) => ({ jobId:job.id,rowNumber:r.rowNumber,referenceId:r.referenceId,input:r.input })))
+      await tx.insert(auditLogs).values({ entityId: original.entityId, actorId: userId, action: 'ANALYSIS_JOB_RETRY_CREATED', resourceId: job.id,
+        details: { previousJobId: id, retryRows: rows.length } })
       return { data:{ id:job.id,previousJobId:id } }
     })
   }

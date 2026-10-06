@@ -14,6 +14,8 @@ import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { sql } from 'drizzle-orm'
 import ExcelJS from 'exceljs'
+import { RE2JS } from 're2js'
+import WebSocket from 'ws'
 import { AppModule } from '../dist/app.module.js'
 import { WorkerModule } from '../dist/worker.module.js'
 import { loadEnvironment } from '../dist/config/load-env.js'
@@ -23,6 +25,7 @@ import { createAuth } from '../dist/modules/auth/auth.js'
 import { AccessProvisioner } from '../dist/modules/access/access-provisioner.js'
 import { JobRunnerService } from '../dist/modules/jobs/job-runner.service.js'
 import { InternalAdapters } from '../dist/modules/analysis/internal-adapters.js'
+import { NotificationsRealtimeGateway } from '../dist/modules/notifications/notifications-realtime.gateway.js'
 import { ApiExceptionFilter } from '../dist/common/api-exception.filter.js'
 import { spreadsheet } from '../dist/modules/files/tabular-files.js'
 import * as schema from '../dist/database/schema/index.js'
@@ -78,6 +81,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     app.setGlobalPrefix('api/v1')
     app.useGlobalFilters(new ApiExceptionFilter())
     await app.listen(0,'127.0.0.1')
+    await app.get(NotificationsRealtimeGateway).start(app.getHttpServer())
     worker=await NestFactory.createApplicationContext(WorkerModule,{ logger:false })
     const runner=worker.get(JobRunnerService)
     const origin=await app.getUrl()
@@ -88,6 +92,29 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     const aCookie=await cookie('alice@example.test'),bCookie=await cookie('bob@example.test')
     const request=(path,method='GET',body,headers={},session=aCookie) => fetch(`${origin}/api/v1/${path}`,{ method,headers:{ ...(session ? { Cookie:session } : {}),...(body && !(body instanceof FormData) ? { 'Content-Type':'application/json' } : {}),...headers },body:body ? body instanceof FormData ? body : JSON.stringify(body) : undefined })
     async function data(response,status=200) { const json=await response.json();assert.equal(response.status,status,JSON.stringify(json));return json.data }
+    async function openNotificationSocket(entityId,session=aCookie) {
+      const socket=new WebSocket(`ws://127.0.0.1:${new URL(origin).port}/api/v1/notifications/ws?entityId=${encodeURIComponent(entityId)}`,{ headers:{ Cookie:session,Origin:config.trustedOrigins[0] } })
+      const [frame]=await once(socket,'message')
+      return { socket,ready:JSON.parse(frame.toString()) }
+    }
+    async function rejectNotificationSocket(entityId,session=aCookie,requestOrigin=config.trustedOrigins[0]) {
+      const socket=new WebSocket(`ws://127.0.0.1:${new URL(origin).port}/api/v1/notifications/ws?entityId=${encodeURIComponent(entityId)}`,{ headers:{ Cookie:session,Origin:requestOrigin } })
+      const [,response]=await once(socket,'unexpected-response')
+      response.resume()
+      return response.statusCode
+    }
+    function nextNotification(socket,type,notificationType) {
+      return new Promise((resolve,reject) => {
+        const cleanup=() => { socket.off('message',onMessage);socket.off('close',onClose) }
+        const onMessage=(frame) => {
+          let message
+          try { message=JSON.parse(frame.toString()) } catch { return }
+          if (message.type===type && message.notificationType===notificationType) { cleanup();resolve(message) }
+        }
+        const onClose=() => { cleanup();reject(new Error('Notification WebSocket closed before event arrived')) }
+        socket.on('message',onMessage);socket.once('close',onClose)
+      })
+    }
     const customer=(segmentId,coreCount=3) => ({ segmentId,coreCount,customerName:'Test customer',customerPicName:'Test PIC',customerPicContact:'test@example.test',presalesUserId:alice.user.id,reason:'Fixture only' })
     const book=(id,cores,key=randomUUID()) => request('bookings','POST',customer(id,cores),{ 'Idempotency-Key':key })
     const usage=async (id) => data(await request(`network/segments/${id}/capacity`))
@@ -106,6 +133,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
 
     await t.test('new migration is repeatable and seeds no operational data',async () => {
       await migrate(db,{ migrationsFolder:'drizzle' })
+      await pool.query('SELECT auto_publish_error FROM import_previews LIMIT 0')
       assert.equal((await pool.query('SELECT count(*)::int AS n FROM bookings')).rows[0].n,0)
       assert.equal((await pool.query('SELECT count(*)::int AS n FROM "user"')).rows[0].n,2)
       assert.deepEqual((await pool.query('SELECT (SELECT count(*) FROM "user") AS users,(SELECT count(*) FROM memberships) AS memberships,(SELECT count(*) FROM membership_roles) AS grants')).rows,preserved.rows)
@@ -116,11 +144,20 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       for (const [path,method,body] of [['bookings','POST',customer(main.id)],['analysis','POST',{ entityId:alpha.entityId,latitude:-6.2,longitude:106.85 }],[`settings/booking-policy?entityId=${alpha.entityId}`,'GET'],[`reports/utilization?entityId=${alpha.entityId}`,'GET'],[`notifications?entityId=${alpha.entityId}`,'GET']]) assert.equal((await request(path,method,body,{},'')).status,401)
       assert.equal((await request('bookings','POST',customer(main.id),{ 'Idempotency-Key':randomUUID() },bCookie)).status,404)
       assert.equal((await request(`reports/utilization?entityId=${beta.entityId}`)).status,403)
+      assert.equal(await rejectNotificationSocket(beta.entityId),403)
+      assert.equal(await rejectNotificationSocket(alpha.entityId,aCookie,'https://untrusted.example.test'),403)
     })
     await t.test('unknown capacity remains null and blocks booking',async () => {
       const result=await usage(unknown.id)
       assert.equal(result.total,null);assert.equal(result.available,null)
       assert.equal((await book(unknown.id,1)).status,422)
+    })
+    await t.test('analysis saves one audit entry without copying customer input into audit details',async () => {
+      const result=await data(await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.2,longitude:106.85 }))
+      assert.ok(result.analysisId);assert.equal(result.status,'OK')
+      const audit=(await pool.query("SELECT details FROM audit_logs WHERE resource_id=$1 AND action='ANALYSIS_CREATED'",[result.analysisId])).rows
+      assert.equal(audit.length,1);assert.equal(audit[0].details.status,'OK')
+      assert.equal(Object.hasOwn(audit[0].details,'latitude'),false)
     })
     await t.test('policy requests stay pending, require reasons and replay without creating duplicate audit/outbox',async () => {
       const value={ duration:5,unit:'DAY' },key=randomUUID()
@@ -246,10 +283,16 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     })
     await t.test('expired booking cannot activate before worker; expiry/outbox remain idempotent',async () => {
       const s=await segment('EXPIRY',5),b=await data(await book(s.id,3),201)
+      const connection=await openNotificationSocket(alpha.entityId)
+      assert.deepEqual(connection.ready,{ type:'ready',entityId:alpha.entityId })
+      try {
       await pool.query("UPDATE bookings SET created_at=clock_timestamp()-interval '2 days',expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[b.id])
       assert.equal((await usage(s.id)).available,5)
       assert.equal((await request(`bookings/${b.id}/activate`,'POST',{ operationalReference:'EXPIRED' })).status,409)
+      const createdFrame=nextNotification(connection.socket,'notification.created','BOOKING_EXPIRED')
       await runner.tick();await runner.tick()
+      const createdMessage=await createdFrame
+      assert.deepEqual(createdMessage,{ type:'notification.created',entityId:alpha.entityId,notificationType:'BOOKING_EXPIRED',notificationId:(await pool.query("SELECT id FROM notifications WHERE type='BOOKING_EXPIRED' AND payload->>'resourceId'=$1",[b.id])).rows[0].id })
       assert.equal((await pool.query('SELECT status FROM bookings WHERE id=$1',[b.id])).rows[0].status,'EXPIRED')
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM outbox_events WHERE type='BOOKING_EXPIRED' AND payload->>'resourceId'=$1",[b.id])).rows[0].n,1)
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM notifications WHERE type='BOOKING_EXPIRED' AND payload->>'resourceId'=$1",[b.id])).rows[0].n,1)
@@ -259,8 +302,16 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const unreadBefore=await data(await request(`notifications/unread-count?entityId=${alpha.entityId}`))
       assert.ok(unreadBefore >= 1)
       assert.equal((await request(`notifications/${notification.id}/read`,'POST',undefined,{},bCookie)).status,404)
+      const readFrame=nextNotification(connection.socket,'notification.read','BOOKING_EXPIRED')
       await data(await request(`notifications/${notification.id}/read`,'POST'),201)
+      const readMessage=await readFrame
+      assert.deepEqual(readMessage,{ type:'notification.read',entityId:alpha.entityId,notificationType:'BOOKING_EXPIRED',notificationId:notification.id })
       assert.equal(await data(await request(`notifications/unread-count?entityId=${alpha.entityId}`)),unreadBefore-1)
+      } finally {
+        const closed=once(connection.socket,'close')
+        connection.socket.close()
+        await closed
+      }
     })
     await t.test('nearest uses full canonical line geography; absent dependencies remain explicit',async () => {
       const result=await data(await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.201,longitude:106.85 }))
@@ -283,39 +334,60 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     const kml=(name='TEST-IMPORT',coords='106.8,-6.2 106.9,-6.2') => Buffer.from(`<kml><Document><Placemark id="stable-import"><name>${name}</name><ExtendedData><Data name="code"><value>IMPORTED</value></Data></ExtendedData><LineString><coordinates>${coords}</coordinates></LineString></Placemark></Document></kml>`)
     const fields={ entityId:alpha.entityId,sourceSystem:'kml-test' }
     let imported
-    await t.test('KML stages without fake capacity; publish requires approved naming; replay keeps stable IDs',async () => {
+    await t.test('KML applies source cable names automatically without fake capacity; replay keeps stable IDs',async () => {
+      const namingTemplate=await data(await request(`settings/naming-policy?entityId=${alpha.entityId}`))
+      assert.deepEqual(namingTemplate.value,{ approved:false,pattern:'[A-Za-z0-9_\\s.,/-]+',uniquePerEntity:true })
+      const namingPattern=new RegExp(`^(?:${namingTemplate.value.pattern})$`)
+      for (const sourceName of ['100','DB12-MS01-PNC1-LINE/01 300','LINE-A 1,900M','2400.','DB24-FDT22-CWI-LINE-A \n1200']) {
+        assert.match(sourceName,namingPattern)
+        assert.equal(RE2JS.compile(namingTemplate.value.pattern).matches(sourceName),true)
+      }
       const preview=await data(await upload('imports','network.kml',kml(),fields),201)
+      assert.equal(preview.status,'PUBLISHED');assert.equal(preview.autoPublishError,null)
+      assert.equal(preview.rows[0].cableName,'TEST-IMPORT')
+      const saved=await data(await request(`imports?entityId=${alpha.entityId}&pageSize=1`))
+      assert.equal(saved.length,1);assert.equal(saved[0].id,preview.id);assert.equal(saved[0].validRows,1);assert.equal(saved[0].status,'PUBLISHED')
+      assert.equal((await request(`imports?entityId=${alpha.entityId}`, 'GET', undefined, {}, bCookie)).status,403)
+      const reopened=await data(await request(`imports/${preview.id}`))
+      assert.deepEqual(reopened.rows,preview.rows)
       assert.equal(preview.rows[0].installedCoreCount,undefined)
-      assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'kml-v1' })).status,422)
       await changePolicy('naming-policy',{ approved:true,pattern:'[A-Za-z0-9 _-]+',uniquePerEntity:true })
-      const publish=await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'kml-v1' }),201)
-      const replay=await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'kml-v1' }),201)
+      const publish=await data(await request(`imports/${preview.id}/publish`,'POST'),201)
+      const replay=await data(await request(`imports/${preview.id}/publish`,'POST'),201)
       assert.equal(publish.datasetId,replay.datasetId)
+      assert.equal((await pool.query('SELECT version FROM network_datasets WHERE id=$1',[publish.datasetId])).rows[0].version,`import-${preview.id}`)
       imported=(await pool.query("SELECT * FROM network_segments WHERE external_id='stable-import'")).rows[0]
       assert.equal(imported.installed_core_count,null)
       assert.equal((await usage(imported.id)).available,null)
       const updated=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ installedCoreCount:8,capacityValidated:true } }) }),201)
-      await data(await request(`imports/${updated.id}/publish`,'POST',{ version:'kml-v2' }),201)
+      await data(await request(`imports/${updated.id}/publish`,'POST'),201)
       const after=(await pool.query("SELECT * FROM network_segments WHERE external_id='stable-import'")).rows[0]
       assert.equal(after.id,imported.id)
       assert.equal(after.cable_name,'TEST-RENAMED')
       assert.equal((await pool.query('SELECT count(*)::int AS n FROM cable_name_history WHERE segment_id=$1',[imported.id])).rows[0].n,1)
     })
+    await t.test('source KML duplicate labels stay exact without fabricated suffixes',async () => {
+      const xml=Buffer.from('<kml><Document><Placemark id="source-a"><name>100</name><LineString><coordinates>106.8,-6.2 106.81,-6.2</coordinates></LineString></Placemark><Placemark id="source-b"><name>100</name><LineString><coordinates>106.82,-6.2 106.83,-6.2</coordinates></LineString></Placemark></Document></kml>')
+      const preview=await data(await upload('imports','duplicate-labels.kml',xml,{ entityId:alpha.entityId,sourceSystem:'duplicate-kml-labels' }),201)
+      assert.equal(preview.status,'PUBLISHED')
+      const names=(await pool.query("SELECT cable_name FROM network_segments WHERE source_system='duplicate-kml-labels' ORDER BY segment_code")).rows
+      assert.deepEqual(names.map((row)=>row.cable_name),['100','100'])
+    })
     await t.test('publish rollback preserves active bookings; stale preview cannot overwrite newer data',async () => {
       const b=await data(await book(imported.id,6),201)
       const unsafe=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ installedCoreCount:4,capacityValidated:true } }) }),201)
-      assert.equal((await request(`imports/${unsafe.id}/publish`,'POST',{ version:'unsafe-v3' })).status,409)
+      assert.equal((await request(`imports/${unsafe.id}/publish`,'POST')).status,409)
       assert.equal((await usage(imported.id)).total,8);assert.equal((await usage(imported.id)).booked,6)
       const current=(await pool.query('SELECT version FROM network_segments WHERE id=$1',[imported.id])).rows[0].version
       await data(await request(`network/segments/${imported.id}`,'PATCH',{ installedCoreCount:10 },{ 'If-Match':String(current) }))
-      assert.equal((await request(`imports/${unsafe.id}/publish`,'POST',{ version:'unsafe-v3' })).status,409)
+      assert.equal((await request(`imports/${unsafe.id}/publish`,'POST')).status,409)
       assert.equal((await pool.query('SELECT status FROM bookings WHERE id=$1',[b.id])).rows[0].status,'BOOKED')
     })
     await t.test('unsafe KML, invalid coordinates and unsupported files do not publish',async () => {
       assert.equal((await upload('imports','evil.kml',Buffer.from('<!DOCTYPE kml [<!ENTITY x SYSTEM "file:///etc/passwd">]><kml>&x;</kml>'),fields)).status,400)
       const invalid=await data(await upload('imports','bad.kml',kml('BAD','181,0 182,1'),fields),201)
       assert.equal(invalid.errors.length,1)
-      assert.equal((await request(`imports/${invalid.id}/publish`,'POST',{ version:'bad' })).status,422)
+      assert.equal((await request(`imports/${invalid.id}/publish`,'POST')).status,422)
       assert.equal((await upload('imports','bad.exe',Buffer.from('not-kml'),fields)).status,400)
     })
     await t.test('valid KML references publish automatically without operationalizing unmapped assets',async () => {
@@ -323,8 +395,8 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const preview=await data(await upload('imports','district.kml',xml,{ entityId:alpha.entityId,sourceSystem:'reference-areas' }),201)
       assert.equal(preview.rows.length,0);assert.equal(preview.areas.length,1);assert.equal(preview.referenceFeatures.length,1);assert.equal(preview.errors.length,0)
       assert.ok(preview.areasPublishedAt);assert.ok(preview.datasetId)
-      assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'areas-v1' })).status,422)
-      const replay=await data(await request(`imports/${preview.id}/publish-areas`,'POST',{ version:'manual-replay' }),201)
+      assert.equal((await request(`imports/${preview.id}/publish`,'POST')).status,422)
+      const replay=await data(await request(`imports/${preview.id}/publish-areas`,'POST'),201)
       assert.equal(replay.datasetId,preview.datasetId)
       const stored=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_areas WHERE external_id='district-1'")).rows[0]
       assert.equal(stored.name,'Reference District');assert.equal(stored.type,'ST_Polygon')
@@ -349,12 +421,12 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
         const buffer=Buffer.from('<kml><Document><Placemark id="address-node"><name>ADDRESS-NODE</name><address>Synthetic address</address><ExtendedData><Data name="kind"><value>NODE</value></Data></ExtendedData></Placemark></Document></kml>')
         const preview=await data(await upload('imports','address.kml',buffer,{ entityId:alpha.entityId,sourceSystem:'address-test' }),201)
         assert.equal(preview.rows.length,0);assert.equal(preview.errors[0].code,'ADDRESS_NEEDS_GEOCODING')
-        assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' })).status,422)
+        assert.equal((await request(`imports/${preview.id}/publish`,'POST')).status,422)
         assert.equal((await request(`imports/${preview.id}/rows/1/geocode`,'POST',undefined,{},bCookie)).status,404)
         assert.equal(calls,0)
         const first=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
         assert.equal(first.rows.length,0);assert.equal(first.errors[0].candidates.length,1)
-        assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' })).status,422)
+        assert.equal((await request(`imports/${preview.id}/publish`,'POST')).status,422)
         const second=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
         assert.notEqual(first.errors[0].lookupId,second.errors[0].lookupId)
         const body={ lookupId:second.errors[0].lookupId,candidateIndex:0 }
@@ -364,7 +436,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
         assert.deepEqual(confirmed.errors,[]);assert.deepEqual(confirmed.rows[0].geometry,{ type:'Point',coordinates:[106.84,-6.21] })
         assert.equal(confirmed.rows[0].geocoding.confirmedBy,alice.user.id)
         assert.equal(confirmed.rows[0].geocoding.datasetVersion,'synthetic-v1')
-        await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'address-v1' }),201)
+        await data(await request(`imports/${preview.id}/publish`,'POST'),201)
         assert.equal((await request(`imports/${preview.id}/rows/1/geocode`,'POST')).status,409)
         assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',body)).status,409)
         assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='IMPORT_COORDINATES_CONFIRMED'",[preview.id])).rows[0].n,1)
@@ -377,7 +449,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const result=await data(await request(`imports/${preview.id}/rows/1/geocode`,'POST'),201)
       assert.equal(result.errors[0].code,'GEOCODING_NOT_CONFIGURED');assert.equal(result.rows.length,0)
       assert.deepEqual(result.errors[0].candidates,[])
-      assert.equal((await request(`imports/${preview.id}/publish`,'POST',{ version:'missing-v1' })).status,422)
+      assert.equal((await request(`imports/${preview.id}/publish`,'POST')).status,422)
       assert.equal((await request(`imports/${preview.id}/rows/1/confirm-coordinates`,'POST',{ lookupId:result.errors[0].lookupId,candidateIndex:0 })).status,422)
     })
     await t.test('bulk KML preview validates point placemarks; job requires approval and resumes from durable checkpoints',async () => {
@@ -407,6 +479,9 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const results=workbook.getWorksheet('Results'),headers=results.getRow(1).values
       const notesIndex=headers.indexOf('notes');assert.equal(results.getRow(2).getCell(notesIndex).value,'=1+1')
       assert.equal((await pool.query('SELECT count(*)::int AS n FROM job_rows WHERE job_id=$1',[bulkJob.id])).rows[0].n,4)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='ANALYSIS_JOB_CREATED'",[bulkJob.id])).rows[0].n,1)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='ANALYSIS_JOB_COMPLETED'",[bulkJob.id])).rows[0].n,1)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE action='ANALYSIS_UPLOAD_CREATED' AND details->>'total'='4'")).rows[0].n,1)
     })
     await t.test('job cancellation is durable and stops at worker checkpoint',async () => {
       const job=await data(await request('reports/exports','POST',{ entityId:alpha.entityId }),202)
@@ -414,6 +489,8 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       await worker.get(JobRunnerService).tick()
       assert.equal((await data(await request(`jobs/${job.id}`))).status,'CANCELLED')
       assert.equal((await request(`jobs/${job.id}/result`)).status,409)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='JOB_CANCEL_REQUESTED'",[job.id])).rows[0].n,1)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='JOB_CANCELLED'",[job.id])).rows[0].n,1)
     })
     await t.test('monitoring XLSX exports use a fixed snapshot, not later capacity',async () => {
       const job=await data(await request('reports/exports','POST',{ entityId:alpha.entityId }),202)
@@ -428,24 +505,41 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       assert.equal(workbook.getWorksheet('Summary').getRow(2).getCell(2).value,job.asOf)
       const audit=await data(await request(`audit-logs?entityId=${alpha.entityId}`));assert.ok(audit.length>0)
     })
-    let pointSegment,connectionPoint
+    await t.test('audit log filters by action, resource text and date range',async () => {
+      const actionResponse=await request(`audit-logs?entityId=${alpha.entityId}&action=BOOKING_CREATED&pageSize=100`)
+      const actionBody=await actionResponse.json();assert.equal(actionResponse.status,200)
+      assert.ok(actionBody.data.length>0);assert.ok(actionBody.data.every((row) => row.action==='BOOKING_CREATED'))
+      assert.equal(actionBody.meta.total,actionBody.data.length)
+      const resource=actionBody.data[0].resource
+      const search=await data(await request(`audit-logs?entityId=${alpha.entityId}&search=${encodeURIComponent(resource)}`))
+      assert.ok(search.some((row) => row.resource===resource))
+      assert.equal((await request(`audit-logs?entityId=${alpha.entityId}&from=2026-10-07&to=2026-10-06`)).status,400)
+      assert.equal((await request(`audit-logs?entityId=${alpha.entityId}&unknown=value`)).status,400)
+      const otherEntity=await data(await request(`audit-logs?entityId=${beta.entityId}`, 'GET', undefined, {}, bCookie))
+      assert.ok(otherEntity.every((row) => row.action !== 'BOOKING_CREATED'))
+    })
+    let pointSegment,uniquePointSegment,connectionPoint,uniqueConnectionPoint
     await t.test('asset KML publishes topology, cable master, poles 7/9 m and distinct ODC/ODP links',async () => {
       const type=await data(await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Synthetic fixture type' }),201)
       assert.equal((await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Different name' })).status,409)
       const placemark=(id,name,geometry) => `<Placemark id="${id}"><name>${name}</name>${geometry}</Placemark>`
       const point=(longitude) => `<Point><coordinates>${longitude},-6.21</coordinates></Point>`
       const line='<LineString><coordinates>106.84,-6.21 106.86,-6.21</coordinates></LineString>'
-      const buffer=Buffer.from(`<kml><Document>${placemark('start','START',point(106.84))}${placemark('end','END',point(106.86))}${placemark('asset-line','TEST-ASSET',line)}${placemark('pole7','P7',point(106.845))}${placemark('pole9','P9',point(106.855))}${placemark('odc','ODC',point(106.845))}${placemark('odp','ODP',point(106.85))}</Document></kml>`)
+       const uniqueLine='<LineString><coordinates>106.94,-6.21 106.96,-6.21</coordinates></LineString>'
+       const buffer=Buffer.from(`<kml><Document>${placemark('start','START',point(106.84))}${placemark('end','END',point(106.86))}${placemark('asset-line','TEST-ASSET',line)}${placemark('pole7','P7',point(106.845))}${placemark('pole9','P9',point(106.855))}${placemark('odc','ODC',point(106.845))}${placemark('odp','ODP',point(106.85))}${placemark('unique-line','UNIQUE-LINE',uniqueLine)}${placemark('unique-odp','UNIQUE-ODP',point(106.95))}</Document></kml>`)
       const mappings={
         '1':{ kind:'NODE',code:'START' },'2':{ kind:'NODE',code:'END' },
         '3':{ kind:'SEGMENT',code:'ASSET-LINE',cableTypeCode:'TEST-FO',installedCoreCount:12,capacityValidated:true,installationMethod:'AERIAL',roadSide:'LEFT',startNodeCode:'START',endNodeCode:'END' },
         '4':{ kind:'POLE',heightM:7,segmentCodes:['ASSET-LINE'] },'5':{ kind:'POLE',heightM:9,segmentCodes:['ASSET-LINE'] },
-        '6':{ kind:'ODC',segmentCodes:['ASSET-LINE'] },'7':{ kind:'ODP',segmentCodes:['ASSET-LINE'] },
+         '6':{ kind:'ODC',segmentCodes:['ASSET-LINE'] },'7':{ kind:'ODP',segmentCodes:['ASSET-LINE'] },
+         '8':{ kind:'SEGMENT',code:'UNIQUE-LINE',cableTypeCode:'TEST-FO' },'9':{ kind:'ODP',segmentCodes:['UNIQUE-LINE'] },
       }
       const preview=await data(await upload('imports','assets.kml',buffer,{ entityId:alpha.entityId,sourceSystem:'asset-test',mappings:JSON.stringify(mappings) }),201)
       assert.deepEqual(preview.errors,[])
-      await data(await request(`imports/${preview.id}/publish`,'POST',{ version:'assets-v1' }),201)
-      pointSegment=(await pool.query("SELECT id FROM network_segments WHERE external_id='asset-line'")).rows[0].id
+      await data(await request(`imports/${preview.id}/publish`,'POST'),201)
+       pointSegment=(await pool.query("SELECT id FROM network_segments WHERE external_id='asset-line'")).rows[0].id
+       uniquePointSegment=(await pool.query("SELECT id FROM network_segments WHERE external_id='unique-line'")).rows[0].id
+       uniqueConnectionPoint=(await pool.query("SELECT id FROM odps WHERE external_id='unique-odp'")).rows[0].id
       const detail=await data(await request(`network/segments/${pointSegment}`))
       assert.equal(detail.cableType.id,type.id)
       assert.deepEqual(detail.assets.poles.map((p) => p.heightM),[7,9])
@@ -456,13 +550,21 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       assert.equal((await request(`network/segments/${pointSegment}`,'PATCH',{ cableName:'@invalid' },{ 'If-Match':'1' })).status,422)
       const history=await data(await request(`network/segments/${imported.id}/name-history`));assert.equal(history.length,1)
     })
-    await t.test('routing and cable formula require an approved policy and validated connection point',async () => {
+    await t.test('routing auto-selects a unique linked point and requires a choice when several points exist',async () => {
       const adapters=app.get(InternalAdapters),originalRoute=adapters.route
-      adapters.route=async () => ({ distanceM:1000,shortestFeasibleDistanceM:900,policyVersion:'test-policy',roadDatasetVersion:'test-roads',geometry:{ type:'LineString',coordinates:[[106.851,-6.211],[106.85,-6.21]] } })
+      const routeTargets=[]
+      adapters.route=async (_from,to) => { routeTargets.push(to);return { distanceM:1000,shortestFeasibleDistanceM:900,policyVersion:'test-policy',roadDatasetVersion:'test-roads',geometry:{ type:'LineString',coordinates:[[106.851,-6.211],[106.85,-6.21]] } } }
       try {
         const input={ entityId:alpha.entityId,latitude:-6.211,longitude:106.851,connectionPointId:connectionPoint,connectionPointType:'ODP' }
         const unconfigured=await data(await request('analysis','POST',input));assert.equal(unconfigured.estimatedCableLengthM,null);assert.equal(unconfigured.routeStatus,'ROUTE_POLICY_NOT_MET_OR_UNCONFIGURED')
         await changePolicy('analysis-policy',{ radiusM:5000,formulaApproved:true,slackPercent:10,extraLengthM:20,maxDetourPercent:20 })
+        const callsBeforeSelection=routeTargets.length
+        const choices=await data(await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.211,longitude:106.851 }))
+        assert.equal(choices.nearest.segmentId,pointSegment);assert.equal(choices.routeStatus,'CONNECTION_POINT_SELECTION_REQUIRED')
+        assert.deepEqual(choices.connectionPointCandidates.map((candidate)=>candidate.type),['ODC','ODP']);assert.equal(routeTargets.length,callsBeforeSelection)
+        const automatic=await data(await request('analysis','POST',{ entityId:alpha.entityId,latitude:-6.211,longitude:106.951 }))
+        assert.equal(automatic.nearest.segmentId,uniquePointSegment);assert.equal(automatic.connectionPointCode,'unique-odp');assert.equal(automatic.connectionPointId,uniqueConnectionPoint)
+        assert.equal(automatic.estimatedCableLengthM,1120);assert.equal(routeTargets.length,callsBeforeSelection+1)
         const result=await data(await request('analysis','POST',input))
         assert.equal(result.nearest.segmentId,pointSegment);assert.equal(result.estimationMethod,'ROAD_ROUTE_ESTIMATE');assert.equal(result.estimatedCableLengthM,1120)
         const invalid=await data(await request('analysis','POST',{ ...input,connectionPointId:randomUUID() }));assert.equal(invalid.routeStatus,'CONNECTION_POINT_NOT_VALIDATED');assert.equal(invalid.estimatedCableLengthM,null)
@@ -523,8 +625,9 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
         const job=await data(await request('analysis/jobs','POST',{ uploadId:preview.id,processValidRows:true }),202)
         await worker.get(JobRunnerService).tick();await worker.get(JobRunnerService).tick()
         assert.equal(calls,1)
-        const retry=await data(await request(`jobs/${job.id}/retry`,'POST'),202)
-        assert.equal((await data(await request(`jobs/${retry.id}`))).total,1)
+         const retry=await data(await request(`jobs/${job.id}/retry`,'POST'),202)
+         assert.equal((await data(await request(`jobs/${retry.id}`))).total,1)
+         assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='ANALYSIS_JOB_RETRY_CREATED'",[retry.id])).rows[0].n,1)
         adapters.geocode=async () => { calls++;return { status:'OK',candidate:{ latitude:-6.2,longitude:106.85,label:'Test only' } } }
         await worker.get(JobRunnerService).tick()
         assert.equal(calls,2);assert.equal((await data(await request(`jobs/${retry.id}`))).status,'COMPLETED')
