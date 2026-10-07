@@ -30,10 +30,37 @@ async function fingerprint(db: Db, entityId: string, sourceSystem: string) {
 const geom = (row: { geometry: unknown }) => sql`ST_SetSRID(ST_GeomFromGeoJSON(${JSON.stringify(row.geometry)}),4326)`
 const referenceDatasetVersion = (previewId: string) => `reference-${previewId}`
 const operationalDatasetVersion = (previewId: string) => `import-${previewId}`
+const AUTO_GEOCODE_LIMIT = 50
 
 @Injectable()
 export class ImportsService {
   constructor(private readonly database: DatabaseService, private readonly access: AccessService, private readonly adapters: InternalAdapters) {}
+
+  private async autoPublishIfEligible(userId: string, id: string) {
+    const { data: preview } = await this.get(userId, id)
+    if (preview.status !== 'PREVIEW' || !preview.rows.length) return { data: preview, published: false }
+    try {
+      await this.publishOperational(userId, id, true)
+      return { data: (await this.get(userId, id)).data, published: true }
+    } catch (error) {
+      const message = error instanceof ConflictException || error instanceof UnprocessableEntityException
+        ? error.message
+        : 'Auto-publish gagal saat validasi server. Preview tetap tersimpan; periksa data dan coba lagi.'
+      const [updated] = await this.database.db.update(importPreviews).set({ autoPublishError: message }).where(eq(importPreviews.id, id)).returning()
+      return { data: updated, published: false }
+    }
+  }
+
+  private async autoGeocodeAddressRows(userId: string, id: string) {
+    const { data: preview } = await this.get(userId, id)
+    const pending = (preview.errors as ImportError[]).filter((row) => row.code === 'ADDRESS_NEEDS_GEOCODING' && row.sourceRow)
+    const rowNumbers = pending.slice(0, AUTO_GEOCODE_LIMIT).map((row) => row.rowNumber)
+    // Bound provider load and send only explicit address text, never names or codes.
+    for (let index = 0; index < rowNumbers.length; index += 5) {
+      await Promise.all(rowNumbers.slice(index, index + 5).map((rowNumber) => this.geocodeRow(userId, id, rowNumber)))
+    }
+    return { attempted: rowNumbers.length, deferred: Math.max(0, pending.length - rowNumbers.length) }
+  }
 
   async preview(userId: string, entityId: string, sourceSystem: string, file: UploadFile, mappings: Record<string, Record<string, unknown>>) {
     await this.access.requireEntityPermission(userId, entityId, 'imports.write')
@@ -46,8 +73,10 @@ export class ImportsService {
       return record
     })
     const hasReferences = parsed.areas.length > 0 || parsed.referenceFeatures.length > 0
-    const references = hasReferences ? await this.publishAreas(userId, preview.id) : { data: preview }
-    return { data: references.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, operationalAutoPublished: false } }
+    if (hasReferences) await this.publishAreas(userId, preview.id)
+    const geocoding = await this.autoGeocodeAddressRows(userId, preview.id)
+    const auto = await this.autoPublishIfEligible(userId, preview.id)
+    return { data: auto.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, autoGeocodeAttempted: geocoding.attempted, autoGeocodeDeferred: geocoding.deferred, operationalAutoPublished: auto.published, autoPublishError: auto.data.autoPublishError ?? null } }
   }
 
   async get(userId: string, id: string) {
@@ -122,13 +151,14 @@ export class ImportsService {
       await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_COORDINATES_CONFIRMED', resourceId: id, details: { rowNumber, provider: row.geocoding?.provider, datasetVersion: row.geocoding?.datasetVersion, coordinates: row.geometry.coordinates } })
       return { data: record }
     })
-    return this.get(userId, id)
+    const auto = await this.autoPublishIfEligible(userId, id)
+    return { data: auto.data }
   }
 
   async confirmClassification(userId: string, id: string, rowNumber: number, rawInput: AssetClassificationInput) {
     const input = parseInput(assetClassificationSchema, rawInput)
     const { data: preview } = await this.get(userId, id)
-    return this.database.db.transaction(async (tx) => {
+    await this.database.db.transaction(async (tx) => {
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status !== 'PREVIEW') throw new ConflictException('Published import cannot be changed')
       const referenceRows = current.referenceFeatures as ReferenceFeatureRow[]
@@ -146,11 +176,12 @@ export class ImportsService {
       })
       const updatedReferences = referenceRows.filter((feature) => feature.rowNumber !== rowNumber)
       const updatedRows = [...rows, row].sort((left, right) => left.rowNumber - right.rowNumber)
-      const [record] = await tx.update(importPreviews).set({ rows: updatedRows, referenceFeatures: updatedReferences }).where(eq(importPreviews.id, id)).returning()
+      await tx.update(importPreviews).set({ rows: updatedRows, referenceFeatures: updatedReferences }).where(eq(importPreviews.id, id))
       await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_CLASSIFICATION_CONFIRMED', resourceId: id,
         details: { rowNumber, kind: row.kind, code: row.code, externalId: row.externalId } })
-      return { data: record }
     })
+    const auto = await this.autoPublishIfEligible(userId, id)
+    return { data: auto.data }
   }
 
   async publishAreas(userId: string, id: string) {
@@ -203,14 +234,18 @@ export class ImportsService {
   }
 
   async publish(userId: string, id: string) {
+    return this.publishOperational(userId, id, false)
+  }
+
+  private async publishOperational(userId: string, id: string, allowValidRowsWithErrors: boolean) {
     const version = operationalDatasetVersion(id)
     const { data: preview } = await this.get(userId, id)
-    if (preview.errors.length || !preview.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
+    if ((!allowValidRowsWithErrors && preview.errors.length) || !preview.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
     return this.database.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${preview.entityId + ':network-write'},0))`)
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status === 'PUBLISHED') return { data: { id, datasetId: current.datasetId, status: current.status } }
-       if (current.errors.length || !current.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
+      if ((!allowValidRowsWithErrors && current.errors.length) || !current.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
       if (await fingerprint(tx, preview.entityId, preview.sourceSystem) !== preview.baseFingerprint) throw new ConflictException('Source dataset changed; create a new preview')
       const rows = current.rows as AssetRow[]
       const areas = current.areas as ReferenceAreaRow[]

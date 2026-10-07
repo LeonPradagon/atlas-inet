@@ -20,16 +20,16 @@ const candidateLabels: Record<KmlCandidateKind, string> = {
 }
 
 const explicitTypeFields = new Set([
-  'kind', 'assetkind', 'assettype', 'networkkind', 'networktype', 'featuretype',
-  'jenis', 'jenisaset', 'tipe', 'tipeaset', 'kategori', 'classification',
+  'type', 'kind', 'assetkind', 'assettype', 'networkkind', 'networktype', 'networkassettype', 'featuretype',
+  'assetcategory', 'jenis', 'jenisaset', 'tipe', 'tipeaset', 'kategori', 'classification',
 ])
 
 function kindFromText(value: string, geometryType: string): KmlCandidateKind | null {
   if (geometryType === 'Point' || geometryType === 'MultiPoint') {
     const pointKinds: Array<[KmlCandidateKind, RegExp]> = [
       ['POP', /\b(?:POP|POINT OF PRESENCE)\b/i],
-      ['ODC', /\bODC\b/i],
-      ['ODP', /\bODP\b/i],
+      ['ODC', /\b(?:ODC|OPTICAL DISTRIBUTION CABINET)\b/i],
+      ['ODP', /\b(?:ODP|OPTICAL DISTRIBUTION POINT)\b/i],
       ['FDT', /\bFDT\b/i],
       ['FAT', /\bFAT\b/i],
       ['OLT', /\bOLT\b/i],
@@ -55,11 +55,15 @@ export function classifyKmlCandidate(input: {
   folderPath?: string
   attributes?: Record<string, unknown>
 }): KmlCandidateClassification | null {
+  const explicitKinds = new Set<KmlCandidateKind>()
   for (const [key, value] of Object.entries(input.attributes ?? {})) {
     if (!explicitTypeFields.has(key.toLowerCase().replace(/[^a-z]/g, '')) || typeof value !== 'string') continue
     const kind = kindFromText(value, input.geometryType)
-    if (kind) return { kind, label: candidateLabels[kind], evidence: 'atribut KML' }
+    if (kind) explicitKinds.add(kind)
   }
+  if (explicitKinds.size > 1) return null
+  const explicitKind = explicitKinds.values().next().value
+  if (explicitKind) return { kind: explicitKind, label: candidateLabels[explicitKind], evidence: 'atribut KML' }
 
   const kind = kindFromText(`${input.name} ${input.folderPath ?? ''}`, input.geometryType)
   return kind ? { kind, label: candidateLabels[kind], evidence: 'nama/folder KML' } : null

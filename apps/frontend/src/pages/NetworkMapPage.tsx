@@ -13,8 +13,8 @@ const layerLabels: Record<NetworkMapLayer, string> = {
   odc: 'ODC',
   odp: 'ODP',
   pops: 'POP',
-  areas: 'Area Referensi',
-  references: 'Placemark KML (referensi belum dipetakan)',
+  areas: 'Area referensi (poligon)',
+  references: 'Placemark KML (titik/garis referensi)',
 }
 
 const mapStyleLabels: Record<NetworkMapStyle, string> = {
@@ -97,9 +97,12 @@ export function NetworkMapPage() {
             {networkFeatures.length === 0
               ? 'Belum ada fitur termuat pada viewport/layer ini.'
               : `${networkFeatures.length} fitur jaringan tersedia.`}
-            {' '}Placemark adalah objek sumber KML; nama dan atributnya tidak otomatis berarti POP, ODC, atau ODP. Titik Placemark tidak disambungkan otomatis tanpa garis/relasi sumber. Arahkan kursor ke garis untuk melihat panjang geometri sumber, bukan panjang kabel terpasang. Area dan fitur referensi bukan aset/kabel operasional. Basemap memerlukan koneksi internet.
           </p>
-          <p className="form-text mb-0">Cluster titik tampil saat zoom jauh. Garis muncul mulai zoom 13; ikon titik individual mulai zoom 15. Klik cluster untuk memperbesar.</p>
+          <div className="small text-secondary mt-2">
+            <p className="mb-1"><strong>Petunjuk:</strong> hover pin untuk melihat tipe dan nama sumber; hover garis kabel untuk melihat nama serta panjang geometri. Klik fitur untuk detail, atau klik cluster pin untuk memperbesar.</p>
+            <p className="mb-1">Placemark KML adalah data sumber, belum tentu aset operasional. Garis KML menunjukkan panjang geometri, bukan panjang kabel terpasang.</p>
+            <p className="mb-0">Data dimuat per area peta. Geser peta lalu pilih <strong>Muat data area ini</strong> untuk area baru. Basemap perlu koneksi internet.</p>
+          </div>
         </ContentCard>
       </div>
       <div className="col-lg-3">

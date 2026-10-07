@@ -35,6 +35,22 @@ test('KML cable labels are detected from Placemark name or cable_name ExtendedDa
   assert.equal(result.errors.length,0)
   assert.deepEqual(result.rows.map((row)=>row.cableName),['DB24-FDT10-CWI-LINE-C 1500','FDR-24C-GNB01 950'])
 })
+test('explicit KML types and unambiguous name patterns auto-map valid assets',async () => {
+  const xml=`<kml><Document>
+    <Placemark id="typed-pop"><name>RANTAU PRAPAT</name><ExtendedData><Data name="asset_type"><value>POP</value></Data><Data name="code"><value>POP-RTP</value></Data></ExtendedData><Point><coordinates>99.8,2.1</coordinates></Point></Placemark>
+    <Placemark id="typed-cable"><name>Backbone exact name</name><ExtendedData><Data name="network_type"><value>backbone</value></Data><Data name="code"><value>BB-RTP</value></Data></ExtendedData><LineString><coordinates>99.8,2.1 99.81,2.11</coordinates></LineString></Placemark>
+    <Placemark id="name-only"><name>ODP-RTP-01</name><Point><coordinates>99.82,2.12</coordinates></Point></Placemark>
+  </Document></kml>`
+  const result=await parseAssetFile(file('explicit-types.kml',Buffer.from(xml)))
+  assert.deepEqual(result.errors,[])
+  assert.deepEqual(result.rows.map(({kind,code,cableName})=>({kind,code,cableName})),[
+    {kind:'POP',code:'POP-RTP',cableName:undefined},
+    {kind:'SEGMENT',code:'BB-RTP',cableName:'Backbone exact name'},
+    {kind:'ODP',code:'name-only',cableName:undefined},
+  ])
+  assert.equal(result.referenceFeatures.length,3)
+  assert.equal(result.referenceFeatures.filter((feature)=>feature.assetRowValid).length,3)
+})
 test('KML rejects invalid geometry and stages valid unmapped geometry as reference',async () => {
   for (const shape of ['<LineString><coordinates>106,0 106,0</coordinates></LineString>','<Point><coordinates>,0</coordinates></Point>','<Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString>','<MultiGeometry><Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString></MultiGeometry>']) {
     const result=await parseAssetFile(file('bad.kml',Buffer.from(`<kml><Placemark id="bad"><name>Test</name>${shape}</Placemark></kml>`)),{ '1':{ kind:shape.startsWith('<Point>') ? 'ODP' : 'SEGMENT' } })
@@ -135,6 +151,9 @@ test('KML address-only point assets stage for geocoding; actual geometry is neve
   assert.equal(kml.rows.length,0);assert.equal(kml.errors[0].code,'ADDRESS_NEEDS_GEOCODING')
   const unknown=await parseAssetFile(file('address.kml',Buffer.from('<kml><Placemark id="unknown"><address>Synthetic address</address></Placemark></kml>')))
   assert.equal(unknown.errors[0].sourceRow,undefined)
+  const extendedAddress=await parseAssetFile(file('extended-address.kml',Buffer.from('<kml><Placemark id="pop-address"><name>POP-RTP</name><ExtendedData><Data name="alamat"><value>Jalan Merdeka, Rantau Prapat</value></Data></ExtendedData></Placemark></kml>')))
+  assert.equal(extendedAddress.errors[0].sourceRow.kind,'POP')
+  assert.equal(extendedAddress.errors[0].sourceRow.address,'Jalan Merdeka, Rantau Prapat')
   const spoof=await parseAssetFile(file('address.kml',Buffer.from('<kml><Placemark id="odp-address"><address>Synthetic address</address></Placemark></kml>')),{ '1':{ kind:'ODP',geocoding:{ provider:'fake' } } })
   assert.match(spoof.errors[0].message,/server-owned/)
   const malformed=await parseAssetFile(file('address.kml',Buffer.from('<kml><Placemark id="odp-address"><address>Synthetic address</address><MultiGeometry/></Placemark></kml>')),{ '1':{ kind:'ODP' } })

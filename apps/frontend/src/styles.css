@@ -188,14 +188,16 @@ body {
   pointer-events: none;
 }
 
-.network-map-line-hover {
+.network-map-line-hover,
+.network-map-feature-hover {
   display: grid;
   gap: 0.2rem;
   color: #17202a;
   font-size: 0.85rem;
 }
 
-.network-map-line-hover span {
+.network-map-line-hover span,
+.network-map-feature-hover span {
   color: #344054;
 }
 

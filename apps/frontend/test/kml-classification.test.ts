@@ -17,6 +17,8 @@ describe('KML candidate classification', () => {
     expect(classifyKmlCandidate({
       name: 'POP example', geometryType: 'Point', attributes: { asset_type: 'ODC' },
     })).toEqual({ kind: 'ODC', label: 'ODC', evidence: 'atribut KML' })
+    expect(classifyKmlCandidate({ name: 'Route 1', geometryType: 'LineString', attributes: { type: 'backbone' } }))
+      .toEqual({ kind: 'cable', label: 'Jalur kabel', evidence: 'atribut KML' })
   })
 
   it('does not classify unrelated names or geometry-incompatible labels', () => {

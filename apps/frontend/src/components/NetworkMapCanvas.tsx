@@ -5,19 +5,20 @@ import type {
   GeoJSONSource,
   LineLayerSpecification,
   LngLatBounds,
+  LngLatLike,
   Map as MapLibreMap,
   SymbolLayerSpecification,
 } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import { classifyKmlCandidate } from '../shared/kml-classification'
+import { prioritizeMapFeature } from '../shared/network-map-hover'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 export type NetworkMapLayer = 'segments' | 'poles' | 'odc' | 'odp' | 'pops' | 'areas' | 'references'
 export type NetworkMapFeatureLayer = NetworkMapLayer | 'analysis'
 export type NetworkMapStyle = 'liberty' | 'bright' | 'satellite' | '3d'
 
-const NETWORK_LINE_MIN_ZOOM = 13
-const NETWORK_POINT_MIN_ZOOM = 15
+const NETWORK_POINT_CLUSTER_MAX_ZOOM = 14
 
 export type NetworkMapProperties = {
   id: string
@@ -54,18 +55,43 @@ function distanceLabel(distanceM: number) {
   return `${new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 }).format(distanceM)} m`
 }
 
-function layerLabel(layer: string) {
+function layerLabel(layer: string, geometryType?: string) {
+  if (layer === 'references') {
+    if (geometryType === 'Point' || geometryType === 'MultiPoint') return 'Titik referensi KML'
+    if (geometryType === 'LineString' || geometryType === 'MultiLineString') return 'Garis referensi KML'
+    return 'Placemark KML · referensi belum dipetakan'
+  }
   const labels: Record<string, string> = {
     segments: 'Segmen kabel operasional',
     poles: 'Tiang',
     odc: 'ODC',
     odp: 'ODP',
     pops: 'POP · aset operasional',
-    areas: 'Area referensi',
-    references: 'Placemark KML · referensi belum dipetakan',
+    areas: 'Area referensi (poligon)',
     analysis: 'Lokasi analisis',
   }
   return labels[layer] ?? layer
+}
+
+function hoverTypeLabel(feature: { geometry: Geometry; properties?: Record<string, unknown> }) {
+  const properties = feature.properties ?? {}
+  const layer = typeof properties.layer === 'string' ? properties.layer : ''
+  if (layer === 'references') {
+    const attributes = properties.attributes && typeof properties.attributes === 'object'
+      ? properties.attributes as Record<string, unknown>
+      : {}
+    const folderPath = properties.kmlFolderPath ?? attributes.kmlFolderPath
+    const candidate = classifyKmlCandidate({
+      name: String(properties.name ?? ''),
+      geometryType: feature.geometry.type,
+      folderPath: typeof folderPath === 'string' ? folderPath : undefined,
+      attributes,
+    })
+    return candidate
+      ? `Kandidat: ${candidate.label} · sumber ${candidate.evidence} (belum dikonfirmasi)`
+      : 'Placemark KML · tipe belum dikenali'
+  }
+  return layer ? layerLabel(layer) : 'Tipe belum diketahui'
 }
 
 const kmlAttributeLabels: Record<string, string> = {
@@ -239,7 +265,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           data: { type: 'FeatureCollection', features: [] },
           cluster: true,
           clusterRadius: 48,
-          clusterMaxZoom: NETWORK_POINT_MIN_ZOOM - 1,
+          clusterMaxZoom: NETWORK_POINT_CLUSTER_MAX_ZOOM,
           clusterMinPoints: 2,
         })
         const polygons: FillLayerSpecification = {
@@ -258,7 +284,6 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           id: 'network-lines',
           type: 'line',
           source: 'network-features',
-          minzoom: NETWORK_LINE_MIN_ZOOM,
           filter: ['match', ['geometry-type'], ['LineString', 'MultiLineString'], true, false],
           layout: {
             'line-join': 'round',
@@ -338,7 +363,6 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           id: 'network-points',
           type: 'symbol',
           source: 'network-point-features',
-          minzoom: NETWORK_POINT_MIN_ZOOM,
           filter: ['all', ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false], ['!', ['has', 'point_count']]],
           layout: {
             'icon-image': ['match', ['get', 'layer'], 'poles', 'atlas-pin-pole', 'odc', 'atlas-pin-odc', 'odp', 'atlas-pin-odp', 'pops', 'atlas-pin-pop', 'references', 'atlas-pin-reference', 'analysis', 'atlas-pin-analysis', 'atlas-pin-analysis'],
@@ -360,13 +384,41 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
         const lineHoverContent = document.createElement('div')
         lineHoverContent.className = 'network-map-line-hover'
         const lineHoverName = document.createElement('strong')
+        const lineHoverType = document.createElement('span')
+        const lineHoverSourceName = document.createElement('span')
         const lineHoverLength = document.createElement('span')
-        lineHoverContent.append(lineHoverName, lineHoverLength)
+        lineHoverContent.append(lineHoverName, lineHoverType, lineHoverSourceName, lineHoverLength)
         const lineHoverPopup = new maplibre.Popup({ closeButton: false, closeOnClick: false, maxWidth: 'min(22rem, 80vw)', offset: 12, className: 'network-map-hover-popup' })
           .setDOMContent(lineHoverContent)
         let hoveredLineId = ''
+        const featureHoverContent = document.createElement('div')
+        featureHoverContent.className = 'network-map-feature-hover'
+        const featureHoverName = document.createElement('strong')
+        const featureHoverType = document.createElement('span')
+        const featureHoverSourceName = document.createElement('span')
+        featureHoverContent.append(featureHoverName, featureHoverType, featureHoverSourceName)
+        const featureHoverPopup = new maplibre.Popup({ closeButton: false, closeOnClick: false, maxWidth: 'min(22rem, 80vw)', offset: 12, className: 'network-map-hover-popup' })
+          .setDOMContent(featureHoverContent)
+        let hoveredFeatureId = ''
         let highlightedAreaId: string | number | null = null
         let popupTitleHovered = false
+        const showFeatureHover = (feature: { id?: string | number; geometry: Geometry; properties?: Record<string, unknown> | null }, lngLat: LngLatLike) => {
+          const properties = feature.properties as Record<string, unknown> | undefined
+          const id = String(feature.id ?? properties?.id ?? properties?.name ?? '')
+          if (id !== hoveredFeatureId) {
+            hoveredFeatureId = id
+            const isReference = properties?.layer === 'references'
+            featureHoverName.textContent = isReference ? 'Placemark KML' : String(properties?.name ?? 'Network feature')
+            featureHoverType.textContent = hoverTypeLabel({ geometry: feature.geometry, properties })
+            featureHoverSourceName.textContent = isReference ? `Nama Placemark sumber: ${String(properties?.name ?? '—')}` : ''
+          }
+          featureHoverPopup.setLngLat(lngLat)
+          if (!featureHoverPopup.isOpen()) featureHoverPopup.addTo(loadedMap)
+        }
+        const hideFeatureHover = () => {
+          hoveredFeatureId = ''
+          featureHoverPopup.remove()
+        }
         const highlightArea = (id: string | number | null) => {
           if (highlightedAreaId !== null) loadedMap.setFeatureState({ source: 'network-features', id: highlightedAreaId }, { active: false })
           highlightedAreaId = id
@@ -384,55 +436,69 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
             loadedMap.easeTo({ center: [coordinates[0], coordinates[1]], zoom, duration: 350 })
           }).catch(() => undefined)
         })
-        loadedMap.on('mousemove', 'network-polygons', (event) => {
-          const feature = event.features?.find((candidate) => candidate.properties?.layer === 'areas')
-          const id = feature?.id
-          highlightArea(typeof id === 'string' || typeof id === 'number' ? id : null)
-          loadedMap.getCanvas().style.cursor = feature ? 'pointer' : ''
-        })
-        loadedMap.on('mouseleave', 'network-polygons', () => {
-          loadedMap.getCanvas().style.cursor = ''
-          if (!popupTitleHovered) highlightArea(null)
-        })
-        loadedMap.on('mousemove', 'network-lines', (event) => {
-          const feature = event.features?.find((candidate) => {
-            const geometryType = candidate.geometry.type
-            return (candidate.properties?.layer === 'references' || candidate.properties?.layer === 'segments')
-              && (geometryType === 'LineString' || geometryType === 'MultiLineString')
-              && Number.isFinite(Number(candidate.properties?.sourceLengthM))
-          })
+        loadedMap.on('mousemove', (event) => {
+          const point = event.point
+          // Query each rendered layer at the exact pointer location; nearby pins must not
+          // steal hover from cables or polygons because their hit areas overlap.
+          const pinHits = loadedMap.queryRenderedFeatures(point, { layers: ['network-points'] })
+          const lineAndAreaHits = loadedMap.queryRenderedFeatures(point, { layers: ['network-lines', 'network-polygons'] })
+          const feature = prioritizeMapFeature([...pinHits, ...lineAndAreaHits])
+          const properties = feature?.properties as Record<string, unknown> | undefined
+          const isLine = feature && (feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString')
+          const isArea = properties?.layer === 'areas'
+            && (feature?.geometry.type === 'Polygon' || feature?.geometry.type === 'MultiPolygon')
+          const areaId = isArea ? feature?.id : null
+          highlightArea(typeof areaId === 'string' || typeof areaId === 'number' ? areaId : null)
+
           if (!feature) {
             hoveredLineId = ''
             lineHoverPopup.remove()
+            hideFeatureHover()
             loadedMap.getCanvas().style.cursor = ''
             return
           }
-          loadedMap.getCanvas().style.cursor = 'help'
-          const properties = feature.properties as Record<string, unknown>
-          const id = String(feature.id ?? properties.id ?? '')
-          if (id !== hoveredLineId) {
-            hoveredLineId = id
-            lineHoverName.textContent = String(properties.name ?? 'Placemark KML')
-            const measureName = properties.layer === 'references' ? 'Panjang geometri KML' : 'Panjang geometri segmen'
-            lineHoverLength.textContent = `${measureName}: ${distanceLabel(Number(properties.sourceLengthM))}`
+          if (isLine) {
+            const lineProperties = properties!
+            const id = String(feature.id ?? lineProperties.id ?? '')
+            if (id !== hoveredLineId) {
+              hoveredLineId = id
+              const isReference = lineProperties.layer === 'references'
+              lineHoverName.textContent = isReference ? 'Geometri KML' : String(lineProperties.name ?? 'Segmen kabel')
+              lineHoverType.textContent = hoverTypeLabel({ geometry: feature.geometry, properties: lineProperties })
+              lineHoverSourceName.textContent = isReference ? `Nama Placemark sumber: ${String(lineProperties.name ?? '—')}` : ''
+              const measureName = isReference ? 'Panjang geometri KML' : lineProperties.layer === 'segments' ? 'Panjang geometri segmen' : 'Panjang geometri'
+              const sourceLength = lineProperties.sourceLengthM
+              lineHoverLength.textContent = `${measureName}: ${typeof sourceLength === 'number' && Number.isFinite(sourceLength) ? distanceLabel(sourceLength) : 'belum tersedia'}`
+            }
+            hideFeatureHover()
+            lineHoverPopup.setLngLat(event.lngLat)
+            if (!lineHoverPopup.isOpen()) lineHoverPopup.addTo(loadedMap)
+            loadedMap.getCanvas().style.cursor = 'help'
+            return
           }
-          lineHoverPopup.setLngLat(event.lngLat)
-          if (!lineHoverPopup.isOpen()) lineHoverPopup.addTo(loadedMap)
-        })
-        loadedMap.on('mouseleave', 'network-lines', () => {
           hoveredLineId = ''
           lineHoverPopup.remove()
+          showFeatureHover(feature, event.lngLat)
+          loadedMap.getCanvas().style.cursor = 'pointer'
+        })
+        loadedMap.getCanvas().addEventListener('mouseleave', () => {
+          hoveredLineId = ''
+          lineHoverPopup.remove()
+          hideFeatureHover()
           loadedMap.getCanvas().style.cursor = ''
+          if (!popupTitleHovered) highlightArea(null)
         })
         loadedMap.on('click', ['network-polygons', 'network-lines', 'network-points', 'area-boundaries', 'area-boundary-casing'], (event) => {
           const clusterUnderPointer = loadedMap.queryRenderedFeatures(event.point, {
             layers: ['network-point-clusters', 'network-point-cluster-count'],
           }).some((candidate) => Number(candidate.properties?.point_count) > 0)
           if (clusterUnderPointer) return
-          const feature = event.features?.[0]
+          const hits = event.features ?? []
+          const feature = prioritizeMapFeature(hits)
           if (!feature) return
           lineHoverPopup.remove()
           hoveredLineId = ''
+          hideFeatureHover()
 
           const properties = feature.properties as Record<string, unknown> | undefined
           if (properties?.layer === 'segments' && typeof properties.id === 'string') segmentCallback.current?.(properties.id)
@@ -480,7 +546,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           if (typeof properties?.layer === 'string') {
             const detail = document.createElement('div')
             detail.className = 'network-map-popup-layer'
-            detail.textContent = layerLabel(properties.layer)
+            detail.textContent = layerLabel(properties.layer, feature.geometry.type)
             popupContent.append(detail)
           }
           const rawAttributes = properties?.attributes && typeof properties.attributes === 'object'

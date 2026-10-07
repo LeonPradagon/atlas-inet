@@ -69,6 +69,63 @@ export type AssetRow = z.infer<typeof assetRowSchema>
 function clean(values: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && value !== null && value !== ''))
 }
+type ExplicitAssetKind = 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP'
+const explicitTypeFields = new Set([
+  'type', 'kind', 'assetkind', 'assettype', 'networkkind', 'networktype', 'networkassettype', 'featuretype',
+  'assetcategory', 'jenis', 'jenisaset', 'tipe', 'tipeaset', 'kategori', 'classification',
+])
+function metadataText(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value).trim()
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return metadataText(record['#text'] ?? record.value)
+  }
+  return ''
+}
+function explicitAssetKind(metadata: Record<string, unknown>): ExplicitAssetKind | null | undefined {
+  const recognized = new Set<ExplicitAssetKind>()
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!explicitTypeFields.has(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
+    const type = metadataText(value).toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim()
+    const kind: ExplicitAssetKind | undefined = ({
+      POP: 'POP', 'POP SITE': 'POP', 'POINT OF PRESENCE': 'POP',
+      ODC: 'ODC', 'OPTICAL DISTRIBUTION CABINET': 'ODC',
+      ODP: 'ODP', 'OPTICAL DISTRIBUTION POINT': 'ODP',
+      POLE: 'POLE', TIANG: 'POLE', 'TIANG JARINGAN': 'POLE',
+      NODE: 'NODE', 'NETWORK NODE': 'NODE', 'NODE JARINGAN': 'NODE',
+      SEGMENT: 'SEGMENT', CABLE: 'SEGMENT', 'CABLE LINE': 'SEGMENT',
+      FIBER: 'SEGMENT', FIBRE: 'SEGMENT', 'FIBER CABLE': 'SEGMENT', 'FIBRE CABLE': 'SEGMENT',
+      KABEL: 'SEGMENT', 'JALUR KABEL': 'SEGMENT', 'KABEL FIBER': 'SEGMENT',
+      BACKBONE: 'SEGMENT', FEEDER: 'SEGMENT', DISTRIBUTION: 'SEGMENT',
+    } as Record<string, ExplicitAssetKind>)[type]
+    if (kind) recognized.add(kind)
+  }
+  if (recognized.size > 1) return null
+  return recognized.values().next().value
+}
+function hasExplicitAssetType(metadata: Record<string, unknown>) {
+  return Object.keys(metadata).some((key) => explicitTypeFields.has(key.toLowerCase().replace(/[^a-z]/g, '')))
+}
+function nameAssetKind(name: string, folderPath: string, geometryType: string): ExplicitAssetKind | undefined {
+  const source = `${name} ${folderPath}`
+  if (geometryType === 'Point') {
+    if (/\b(?:POP|POINT OF PRESENCE)\b/i.test(source)) return 'POP'
+    if (/\b(?:ODC|OPTICAL DISTRIBUTION CABINET)\b/i.test(source)) return 'ODC'
+    if (/\b(?:ODP|OPTICAL DISTRIBUTION POINT)\b/i.test(source)) return 'ODP'
+    if (/\b(?:POLE|TIANG)\b/i.test(source)) return 'POLE'
+  }
+  if ((geometryType === 'LineString' || geometryType === 'MultiLineString')
+    && /\b(?:KABEL|CABLE|FIBER|FIBRE|BACKBONE|FEEDER|DISTRIBUTION)\b|\bBB[-_ ]?\d+\b|\bFDR[-_ ]?[A-Z0-9]+\b/i.test(source)) return 'SEGMENT'
+  return undefined
+}
+function explicitPoleHeight(metadata: Record<string, unknown>): 7 | 9 | undefined {
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!['height', 'heightm', 'poleheight', 'tinggi', 'tinggitiang'].includes(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
+    const match = /^(7|9)(?:\s*m)?$/i.exec(metadataText(value))
+    if (match) return Number(match[1]) as 7 | 9
+  }
+  return undefined
+}
 export async function parseAssetFile(file: UploadFile, mappings: Record<string, Record<string, unknown>> = {}) {
   const input: { rowNumber: number; row: unknown; error?: string; reference?: unknown }[] = []
   const areas: ReferenceAreaRow[] = []
@@ -142,6 +199,9 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
       const sourceCableNameValue = metadata.cable_name ?? metadata.cablename ?? metadata.fiber_name ?? metadata.fibername ?? p.name ?? metadata.name
       const sourceCableName = sourceCableNameValue === undefined ? undefined : propertyValue(sourceCableNameValue)
       const featureName = sourceCableName || `Placemark ${rowNumber}`
+      const mapped = mappings[String(rowNumber)] ?? {}
+      const sourceAddress = p.address ?? metadata.address ?? metadata.full_address ?? metadata.fulladdress ?? metadata.alamat ?? metadata.alamatlengkap ?? mapped.address
+      const address = sourceAddress === undefined ? undefined : propertyValue(sourceAddress)
       if (featureName && !properties.name) properties.name = featureName
       const coords = (value: unknown) => String(value).trim().split(/\s+/).map((pair) => {
         const parts = pair.split(',')
@@ -193,7 +253,7 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
       }
       let geometry: unknown
       const geometryCount = ['LineString','Point','MultiGeometry','Polygon'].filter((key) => p[key] !== undefined).length
-      if (geometryCount !== 1 && !(geometryCount === 0 && (p.address || mappings[String(rowNumber)]?.address))) {
+      if (geometryCount !== 1 && !(geometryCount === 0 && address)) {
         input.push({ rowNumber,row:{},error:'Exactly one supported geometry is required per Placemark' });continue
       }
       if (p.LineString !== undefined) geometry = { type: 'LineString', coordinates: coords((p.LineString as Record<string,unknown>).coordinates) }
@@ -206,9 +266,14 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
         if (!lines) { input.push({ rowNumber, row: {}, error: 'MultiGeometry needs nonempty LineStrings' }); continue }
         geometry = { type: 'MultiLineString', coordinates: (Array.isArray(lines) ? lines : [lines]).map((line) => coords((line as Record<string,unknown>).coordinates)) }
       }
-      const code = metadata.code ?? p['@_id']
-       input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: p['@_id'] ?? `placemark-${rowNumber}`, name: featureName.slice(0, 500), geometry, assetRowValid: false, properties } : undefined,
-         row: clean({ kind: metadata.kind, externalId: p['@_id'], code, cableName: sourceCableName, geometry, address: p.address, ...(mappings[String(rowNumber)] ?? {}), rowNumber }) })
+      const code = metadata.code === undefined ? (p['@_id'] ?? featureName) : propertyValue(metadata.code)
+      const inferredKind = explicitAssetKind(metadata)
+      const namedKind = hasExplicitAssetType(metadata) ? undefined : nameAssetKind(featureName, entry.folderPath.join('/'), (geometry as { type?: string } | undefined)?.type ?? (address ? 'Point' : ''))
+      const kind = inferredKind === null ? undefined : inferredKind ?? namedKind
+      const heightM = explicitPoleHeight(metadata)
+      const cableName = geometry && ['LineString', 'MultiLineString'].includes((geometry as { type?: string }).type ?? '') ? sourceCableName : undefined
+      input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: p['@_id'] ?? `placemark-${rowNumber}`, name: featureName.slice(0, 500), geometry, assetRowValid: false, properties } : undefined,
+        row: clean({ kind, externalId: p['@_id'] ?? `placemark-${rowNumber}`, code: propertyValue(code).slice(0, 200), cableName, geometry, address, ...(heightM !== undefined ? { heightM } : {}), ...mapped, rowNumber }) })
     }
   }
   const rows: AssetRow[] = []
@@ -230,7 +295,7 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
         const identity = `${draft.data.kind}:${draft.data.externalId}`
         if (seen.has(identity)) { errors.push({ rowNumber: item.rowNumber, message: 'Duplicate source identity' }); continue }
         seen.add(identity)
-        errors.push({ rowNumber: item.rowNumber, code: 'ADDRESS_NEEDS_GEOCODING', message: 'Alamat belum memiliki koordinat. Cari dan konfirmasi kandidat sebelum publish.', sourceRow: draft.data })
+        errors.push({ rowNumber: item.rowNumber, code: 'ADDRESS_NEEDS_GEOCODING', message: 'Alamat belum memiliki koordinat. Kandidat akan dicari otomatis; konfirmasi hasil sebelum publish.', sourceRow: draft.data })
         continue
       }
       if ((item.row as Record<string, unknown>).kind === 'SEGMENT') {
