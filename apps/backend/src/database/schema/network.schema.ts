@@ -53,10 +53,10 @@ function pointColumns() {
   }
 }
 
-function pointConstraints(name: string, table: { [K in keyof ReturnType<typeof pointColumns>]: AnyPgColumn }) {
+function pointConstraints(name: string, table: { [K in keyof ReturnType<typeof pointColumns>]: AnyPgColumn }, allowDuplicateCodes = false) {
   return [
     unique(`${name}_id_scope_unique`).on(table.id, table.ownerEntityId, table.datasetId),
-    unique(`${name}_owner_code_unique`).on(table.ownerEntityId, table.code),
+    ...(!allowDuplicateCodes ? [unique(`${name}_owner_code_unique`).on(table.ownerEntityId, table.code)] : []),
     unique(`${name}_source_identity_unique`).on(table.ownerEntityId, table.sourceSystem, table.externalId),
     foreignKey({ columns: [table.datasetId, table.ownerEntityId], foreignColumns: [networkDatasets.id, networkDatasets.ownerEntityId] }),
     index(`${name}_geometry_gist`).using('gist', table.geometry),
@@ -76,7 +76,8 @@ export const poles = pgTable('poles', {
   check('poles_height_valid', sql`${table.heightM} IN (7, 9)`),
 ])
 export const odcs = pgTable('odcs', pointColumns(), (table) => pointConstraints('odcs', table))
-export const odps = pgTable('odps', pointColumns(), (table) => pointConstraints('odps', table))
+// ODP labels such as A01 are local to their FDT/line and commonly repeat in source KML.
+export const odps = pgTable('odps', pointColumns(), (table) => pointConstraints('odps', table, true))
 export const pops = pgTable('pops', pointColumns(), (table) => pointConstraints('pops', table))
 
 export const referenceAreas = pgTable('reference_areas', {

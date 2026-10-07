@@ -374,6 +374,17 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const names=(await pool.query("SELECT cable_name FROM network_segments WHERE source_system='duplicate-kml-labels' ORDER BY segment_code")).rows
       assert.deepEqual(names.map((row)=>row.cable_name),['100','100'])
     })
+    await t.test('reused ODP codes at distinct KML coordinates both publish',async () => {
+      const xml=Buffer.from(`<kml><Document>
+        <Placemark id="odp-first"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.8,-6.2</coordinates></Point></Placemark>
+        <Placemark id="odp-second"><name>ODP Site B</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.81,-6.21</coordinates></Point></Placemark>
+      </Document></kml>`)
+      const preview=await data(await upload('imports','reused-odp-code.kml',xml,{ entityId:alpha.entityId,sourceSystem:'reused-odp-code' }),201)
+      assert.equal(preview.status,'PUBLISHED')
+      assert.equal(preview.rows.length,2)
+      assert.equal(preview.errors.length,0)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM odps WHERE source_system='reused-odp-code' AND code='A01'")).rows[0].n,2)
+    })
     await t.test('publish rollback preserves active bookings; stale preview cannot overwrite newer data',async () => {
       const b=await data(await book(imported.id,6),201)
       const unsafe=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ kind:'SEGMENT',installedCoreCount:4,capacityValidated:true } }) }),201)

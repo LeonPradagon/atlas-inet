@@ -7,7 +7,7 @@ import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDataset
 import { AccessService } from '../access/access.service.js'
 import { validateCableName, validateImportedCableName } from '../assets/assets.service.js'
 import { readUsage } from '../capacity/capacity.repository.js'
-import { assetClassificationSchema, assetRowSchema, pointAddressSchema, type AssetClassificationInput, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
+import { DUPLICATE_ASSET_GEOMETRY_WARNING, assetClassificationSchema, assetRowSchema, pointAddressSchema, type AssetClassificationInput, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
 import type { UploadFile } from '../files/tabular-files.js'
 import { InternalAdapters } from '../analysis/internal-adapters.js'
 import { parseInput } from '../../common/domain-input.js'
@@ -31,6 +31,7 @@ const geom = (row: { geometry: unknown }) => sql`ST_SetSRID(ST_GeomFromGeoJSON($
 const referenceDatasetVersion = (previewId: string) => `reference-${previewId}`
 const operationalDatasetVersion = (previewId: string) => `import-${previewId}`
 const AUTO_GEOCODE_LIMIT = 50
+const hasBlockingImportErrors = (errors: readonly { code?: unknown }[]) => errors.some((error) => error.code !== DUPLICATE_ASSET_GEOMETRY_WARNING)
 
 @Injectable()
 export class ImportsService {
@@ -166,7 +167,7 @@ export class ImportsService {
       if (!reference) throw new ConflictException('This Placemark is no longer awaiting classification')
       const rows = current.rows as AssetRow[]
       if (rows.some((row) => row.rowNumber === rowNumber)) throw new ConflictException('Import row was already classified')
-      if (rows.some((row) => row.kind === input.kind && row.code === input.code)) throw new ConflictException(`Duplicate ${input.kind} code: ${input.code}`)
+      if (input.kind !== 'ODP' && rows.some((row) => row.kind === input.kind && row.code === input.code)) throw new ConflictException(`Duplicate ${input.kind} code: ${input.code}`)
       const row = parseInput(assetRowSchema, {
         ...input,
         rowNumber,
@@ -240,12 +241,12 @@ export class ImportsService {
   private async publishOperational(userId: string, id: string, allowValidRowsWithErrors: boolean) {
     const version = operationalDatasetVersion(id)
     const { data: preview } = await this.get(userId, id)
-    if ((!allowValidRowsWithErrors && preview.errors.length) || !preview.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
+    if ((!allowValidRowsWithErrors && hasBlockingImportErrors(preview.errors)) || !preview.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
     return this.database.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${preview.entityId + ':network-write'},0))`)
       const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
       if (current.status === 'PUBLISHED') return { data: { id, datasetId: current.datasetId, status: current.status } }
-      if ((!allowValidRowsWithErrors && current.errors.length) || !current.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
+      if ((!allowValidRowsWithErrors && hasBlockingImportErrors(current.errors as ImportError[])) || !current.rows.length) throw new UnprocessableEntityException('Resolve import errors and include valid operational asset rows before publish')
       if (await fingerprint(tx, preview.entityId, preview.sourceSystem) !== preview.baseFingerprint) throw new ConflictException('Source dataset changed; create a new preview')
       const rows = current.rows as AssetRow[]
       const areas = current.areas as ReferenceAreaRow[]
@@ -262,6 +263,7 @@ export class ImportsService {
       const segments = new Map(locked.map((s) => [s.segmentCode, s.id]))
       const codes = new Set<string>()
       for (const row of rows) {
+        if (row.kind === 'ODP') continue
         const code = `${row.kind}:${row.code}`
         if (codes.has(code)) throw new ConflictException(`Duplicate ${row.kind} code at row ${row.rowNumber}`)
         codes.add(code)

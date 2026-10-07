@@ -107,17 +107,37 @@ function hasExplicitAssetType(metadata: Record<string, unknown>) {
   return Object.keys(metadata).some((key) => explicitTypeFields.has(key.toLowerCase().replace(/[^a-z]/g, '')))
 }
 function nameAssetKind(name: string, folderPath: string, geometryType: string): ExplicitAssetKind | undefined {
-  const source = `${name} ${folderPath}`
-  if (geometryType === 'Point') {
-    if (/\b(?:POP|POINT OF PRESENCE)\b/i.test(source)) return 'POP'
-    if (/\b(?:ODC|OPTICAL DISTRIBUTION CABINET)\b/i.test(source)) return 'ODC'
-    if (/\b(?:ODP|OPTICAL DISTRIBUTION POINT)\b/i.test(source)) return 'ODP'
-    if (/\b(?:POLE|TIANG)\b/i.test(source)) return 'POLE'
+  const kindFromLabel = (label: string): ExplicitAssetKind | undefined => {
+    if (geometryType === 'Point') {
+      // Prefer specific equipment labels over a broad parent folder such as "POP Depok".
+      if (/\b(?:ODC|OPTICAL DISTRIBUTION CABINET)\b/i.test(label)) return 'ODC'
+      if (/\b(?:ODP|OPTICAL DISTRIBUTION POINT)\b/i.test(label)) return 'ODP'
+      if (/\b(?:POLE|TIANG)\b/i.test(label)) return 'POLE'
+      if (/\b(?:POP|POINT OF PRESENCE)\b/i.test(label)) return 'POP'
+    }
+    if ((geometryType === 'LineString' || geometryType === 'MultiLineString')
+      && /\b(?:KABEL|CABLE|FIBER|FIBRE|BACKBONE|FEEDER|DISTRIBUTION)\b|\bBB[-_ ]?\d+\b|\bFDR[-_ ]?[A-Z0-9]+\b/i.test(label)) return 'SEGMENT'
+    return undefined
   }
-  if ((geometryType === 'LineString' || geometryType === 'MultiLineString')
-    && /\b(?:KABEL|CABLE|FIBER|FIBRE|BACKBONE|FEEDER|DISTRIBUTION)\b|\bBB[-_ ]?\d+\b|\bFDR[-_ ]?[A-Z0-9]+\b/i.test(source)) return 'SEGMENT'
+
+  const nameKind = kindFromLabel(name)
+  if (nameKind) return nameKind
+  if (geometryType === 'Point' && /\b(?:FDT|FAT|OLT|ODF|SLACK)\b/i.test(name)) return undefined
+  const folders = folderPath.split('/').map((folder) => folder.trim()).filter(Boolean).reverse()
+  for (const [index, folder] of folders.entries()) {
+    const kind = kindFromLabel(folder)
+    if (kind) {
+      // A POP folder is commonly a site/container. Only infer POP when Placemark sits
+      // directly in it; nested equipment folders must classify themselves.
+      if (kind !== 'POP' || index === 0) return kind
+      return undefined
+    }
+    if (geometryType === 'Point' && /\b(?:FDT|FAT|OLT|ODF|SLACK)\b/i.test(folder)) return undefined
+  }
   return undefined
 }
+
+export const DUPLICATE_ASSET_GEOMETRY_WARNING = 'DUPLICATE_ASSET_GEOMETRY_SKIPPED'
 function explicitPoleHeight(metadata: Record<string, unknown>): 7 | 9 | undefined {
   for (const [key, value] of Object.entries(metadata)) {
     if (!['height', 'heightm', 'poleheight', 'tinggi', 'tinggitiang'].includes(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
@@ -279,6 +299,7 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
   const rows: AssetRow[] = []
   const errors: ImportError[] = []
   const seen = new Set<string>()
+  const seenAssetFeatures = new Map<string, number>()
   const referenceIdentities = new Set<string>()
   const addReferenceFeature = (value: unknown) => {
     const parsed = referenceFeatureSchema.safeParse(value)
@@ -313,6 +334,24 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
       continue
     }
     seen.add(identity)
+    const featureIdentity = `${parsed.data.kind}:${parsed.data.code}:${JSON.stringify(parsed.data.geometry)}`
+    const firstFeatureRow = seenAssetFeatures.get(featureIdentity)
+    if (firstFeatureRow !== undefined) {
+      const reference = item.reference as Record<string, unknown>
+      const properties = reference.properties as Record<string, string> | undefined
+      addReferenceFeature({
+        ...reference,
+        assetRowValid: false,
+        properties: { ...properties, duplicateFeatureOfRow: String(firstFeatureRow) },
+      })
+      errors.push({
+        rowNumber: item.rowNumber,
+        code: DUPLICATE_ASSET_GEOMETRY_WARNING,
+        message: `Kode ${parsed.data.kind} "${parsed.data.code}" dan koordinat sama dengan baris ${firstFeatureRow}; baris ini tetap sebagai referensi KML.`,
+      })
+      continue
+    }
+    seenAssetFeatures.set(featureIdentity, parsed.data.rowNumber)
     addReferenceFeature({ ...item.reference as Record<string, unknown>, assetRowValid: true })
     rows.push(parsed.data)
   }

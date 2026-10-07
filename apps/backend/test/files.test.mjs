@@ -51,6 +51,44 @@ test('explicit KML types and unambiguous name patterns auto-map valid assets',as
   assert.equal(result.referenceFeatures.length,3)
   assert.equal(result.referenceFeatures.filter((feature)=>feature.assetRowValid).length,3)
 })
+test('specific Placemark and deepest folder type override broad parent POP folder',async () => {
+  const xml=`<kml><Document><name>FTTH</name><Folder><name>POP GUNUNG BUNDER</name>
+    <Folder><name>ODP</name><Placemark><name>THC-ODP-GNB-MS010/10</name><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark></Folder>
+    <Folder><name>POLE</name><Placemark><name>PL-DB-MS01-001</name><ExtendedData><Data name="height"><value>7</value></Data></ExtendedData><Point><coordinates>106.61,-6.61</coordinates></Point></Placemark></Folder>
+    <Placemark><name>POP GUNUNG BUNDER</name><Point><coordinates>106.62,-6.62</coordinates></Point></Placemark>
+  </Folder></Document></kml>`
+  const result=await parseAssetFile(file('nested-pop-folders.kml',Buffer.from(xml)))
+  assert.deepEqual(result.rows.map(({kind,code})=>({kind,code})),[
+    {kind:'ODP',code:'THC-ODP-GNB-MS010/10'},
+    {kind:'POLE',code:'PL-DB-MS01-001'},
+    {kind:'POP',code:'POP GUNUNG BUNDER'},
+  ])
+  assert.deepEqual(result.errors,[])
+})
+test('duplicate ODP code at different coordinates stays as two source assets',async () => {
+  const xml=`<kml><Document>
+    <Placemark id="odp-first"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark>
+    <Placemark id="odp-second"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.7,-6.7</coordinates></Point></Placemark>
+  </Document></kml>`
+  const result=await parseAssetFile(file('duplicate-pop-code.kml',Buffer.from(xml)))
+  assert.deepEqual(result.rows.map(({rowNumber,kind,code})=>({rowNumber,kind,code})),[
+    {rowNumber:1,kind:'ODP',code:'A01'},
+    {rowNumber:2,kind:'ODP',code:'A01'},
+  ])
+  assert.deepEqual(result.errors,[])
+  assert.equal(result.referenceFeatures.find((feature)=>feature.rowNumber===1)?.assetRowValid,true)
+  assert.equal(result.referenceFeatures.find((feature)=>feature.rowNumber===2)?.assetRowValid,true)
+})
+test('same ODP code and coordinates are deduplicated without blocking import',async () => {
+  const xml=`<kml><Document>
+    <Placemark id="odp-first"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark>
+    <Placemark id="odp-copy"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark>
+  </Document></kml>`
+  const result=await parseAssetFile(file('exact-duplicate-odp.kml',Buffer.from(xml)))
+  assert.equal(result.rows.length,1)
+  assert.equal(result.errors[0].code,'DUPLICATE_ASSET_GEOMETRY_SKIPPED')
+  assert.equal(result.referenceFeatures.find((feature)=>feature.rowNumber===2)?.properties.duplicateFeatureOfRow,'1')
+})
 test('KML rejects invalid geometry and stages valid unmapped geometry as reference',async () => {
   for (const shape of ['<LineString><coordinates>106,0 106,0</coordinates></LineString>','<Point><coordinates>,0</coordinates></Point>','<Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString>','<MultiGeometry><Point><coordinates>106,0</coordinates></Point><LineString><coordinates>106,0 107,1</coordinates></LineString></MultiGeometry>']) {
     const result=await parseAssetFile(file('bad.kml',Buffer.from(`<kml><Placemark id="bad"><name>Test</name>${shape}</Placemark></kml>`)),{ '1':{ kind:shape.startsWith('<Point>') ? 'ODP' : 'SEGMENT' } })

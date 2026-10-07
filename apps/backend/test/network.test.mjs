@@ -129,10 +129,13 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       await assert.rejects(segment('BAD-SIDE', { roadSide: 'NORTH' }), (error) => error.cause?.code === '23514')
       await assert.rejects(segment('BAD-TOPOLOGY', { endNodeId: null }), (error) => error.cause?.code === '23514')
     })
-    await t.test('duplicate source identity and codes are rejected without replacing existing assets', async () => {
+    await t.test('source identities stay unique while ODP codes repeat across local FDT scopes', async () => {
       await assert.rejects(segment('OTHER', { externalId: 'stable-external-id' }), (error) => error.cause?.code === '23505')
       await assert.rejects(segment('AAA-MAIN'), (error) => error.cause?.code === '23505')
       await assert.rejects(point(schema.odcs, 'ODC1'), (error) => error.cause?.code === '23505')
+      const odpA = await point(schema.odps, 'A01', 106.71, -6.21, { externalId: 'fdt-a-a01' })
+      const odpB = await point(schema.odps, 'A01', 106.72, -6.22, { externalId: 'fdt-b-a01' })
+      assert.notEqual(odpA.id, odpB.id)
     })
     await t.test('dataset ownership, asset links and topology cannot cross entity/version boundaries', async () => {
       await assert.rejects(segment('CROSS-DATASET', { datasetId: bDataset.id }), (error) => error.cause?.code === '23503')

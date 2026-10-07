@@ -27,15 +27,15 @@ const explicitTypeFields = new Set([
 function kindFromText(value: string, geometryType: string): KmlCandidateKind | null {
   if (geometryType === 'Point' || geometryType === 'MultiPoint') {
     const pointKinds: Array<[KmlCandidateKind, RegExp]> = [
-      ['POP', /\b(?:POP|POINT OF PRESENCE)\b/i],
       ['ODC', /\b(?:ODC|OPTICAL DISTRIBUTION CABINET)\b/i],
       ['ODP', /\b(?:ODP|OPTICAL DISTRIBUTION POINT)\b/i],
+      ['pole', /\b(?:POLE|TIANG)\b/i],
       ['FDT', /\bFDT\b/i],
       ['FAT', /\bFAT\b/i],
       ['OLT', /\bOLT\b/i],
       ['ODF', /\bODF\b/i],
-      ['pole', /\b(?:POLE|TIANG)\b/i],
       ['slack', /\bSLACK\b/i],
+      ['POP', /\b(?:POP|POINT OF PRESENCE)\b/i],
     ]
     return pointKinds.find(([, pattern]) => pattern.test(value))?.[0] ?? null
   }
@@ -65,6 +65,16 @@ export function classifyKmlCandidate(input: {
   const explicitKind = explicitKinds.values().next().value
   if (explicitKind) return { kind: explicitKind, label: candidateLabels[explicitKind], evidence: 'atribut KML' }
 
-  const kind = kindFromText(`${input.name} ${input.folderPath ?? ''}`, input.geometryType)
+  const nameKind = kindFromText(input.name, input.geometryType)
+  const folders = (input.folderPath ?? '').split('/').map((folder) => folder.trim()).filter(Boolean).reverse()
+  let folderKind: KmlCandidateKind | null = null
+  for (const [index, folder] of folders.entries()) {
+    const candidate = kindFromText(folder, input.geometryType)
+    if (!candidate) continue
+    if (candidate === 'POP' && index !== 0) break
+    folderKind = candidate
+    break
+  }
+  const kind = nameKind ?? folderKind
   return kind ? { kind, label: candidateLabels[kind], evidence: 'nama/folder KML' } : null
 }
