@@ -334,7 +334,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     const kml=(name='TEST-IMPORT',coords='106.8,-6.2 106.9,-6.2') => Buffer.from(`<kml><Document><Placemark id="stable-import"><name>${name}</name><ExtendedData><Data name="code"><value>IMPORTED</value></Data></ExtendedData><LineString><coordinates>${coords}</coordinates></LineString></Placemark></Document></kml>`)
     const fields={ entityId:alpha.entityId,sourceSystem:'kml-test' }
     let imported
-    await t.test('KML applies source cable names automatically without fake capacity; replay keeps stable IDs',async () => {
+    await t.test('KML cable mappings stay staged until explicit publish and preserve source names/IDs',async () => {
       const namingTemplate=await data(await request(`settings/naming-policy?entityId=${alpha.entityId}`))
       assert.deepEqual(namingTemplate.value,{ approved:false,pattern:'[A-Za-z0-9_\\s.,/-]+',uniquePerEntity:true })
       const namingPattern=new RegExp(`^(?:${namingTemplate.value.pattern})$`)
@@ -342,11 +342,11 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
         assert.match(sourceName,namingPattern)
         assert.equal(RE2JS.compile(namingTemplate.value.pattern).matches(sourceName),true)
       }
-      const preview=await data(await upload('imports','network.kml',kml(),fields),201)
-      assert.equal(preview.status,'PUBLISHED');assert.equal(preview.autoPublishError,null)
+      const preview=await data(await upload('imports','network.kml',kml(),{ ...fields,mappings:JSON.stringify({ '1':{ kind:'SEGMENT' } }) }),201)
+      assert.equal(preview.status,'PREVIEW')
       assert.equal(preview.rows[0].cableName,'TEST-IMPORT')
       const saved=await data(await request(`imports?entityId=${alpha.entityId}&pageSize=1`))
-      assert.equal(saved.length,1);assert.equal(saved[0].id,preview.id);assert.equal(saved[0].validRows,1);assert.equal(saved[0].status,'PUBLISHED')
+      assert.equal(saved.length,1);assert.equal(saved[0].id,preview.id);assert.equal(saved[0].validRows,1);assert.equal(saved[0].status,'PREVIEW')
       assert.equal((await request(`imports?entityId=${alpha.entityId}`, 'GET', undefined, {}, bCookie)).status,403)
       const reopened=await data(await request(`imports/${preview.id}`))
       assert.deepEqual(reopened.rows,preview.rows)
@@ -359,7 +359,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       imported=(await pool.query("SELECT * FROM network_segments WHERE external_id='stable-import'")).rows[0]
       assert.equal(imported.installed_core_count,null)
       assert.equal((await usage(imported.id)).available,null)
-      const updated=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ installedCoreCount:8,capacityValidated:true } }) }),201)
+      const updated=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ kind:'SEGMENT',installedCoreCount:8,capacityValidated:true } }) }),201)
       await data(await request(`imports/${updated.id}/publish`,'POST'),201)
       const after=(await pool.query("SELECT * FROM network_segments WHERE external_id='stable-import'")).rows[0]
       assert.equal(after.id,imported.id)
@@ -368,14 +368,15 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
     })
     await t.test('source KML duplicate labels stay exact without fabricated suffixes',async () => {
       const xml=Buffer.from('<kml><Document><Placemark id="source-a"><name>100</name><LineString><coordinates>106.8,-6.2 106.81,-6.2</coordinates></LineString></Placemark><Placemark id="source-b"><name>100</name><LineString><coordinates>106.82,-6.2 106.83,-6.2</coordinates></LineString></Placemark></Document></kml>')
-      const preview=await data(await upload('imports','duplicate-labels.kml',xml,{ entityId:alpha.entityId,sourceSystem:'duplicate-kml-labels' }),201)
-      assert.equal(preview.status,'PUBLISHED')
+      const preview=await data(await upload('imports','duplicate-labels.kml',xml,{ entityId:alpha.entityId,sourceSystem:'duplicate-kml-labels',mappings:JSON.stringify({ '1':{ kind:'SEGMENT' },'2':{ kind:'SEGMENT' } }) }),201)
+      assert.equal(preview.status,'PREVIEW')
+      await data(await request(`imports/${preview.id}/publish`,'POST'),201)
       const names=(await pool.query("SELECT cable_name FROM network_segments WHERE source_system='duplicate-kml-labels' ORDER BY segment_code")).rows
       assert.deepEqual(names.map((row)=>row.cable_name),['100','100'])
     })
     await t.test('publish rollback preserves active bookings; stale preview cannot overwrite newer data',async () => {
       const b=await data(await book(imported.id,6),201)
-      const unsafe=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ installedCoreCount:4,capacityValidated:true } }) }),201)
+      const unsafe=await data(await upload('imports','network.kml',kml('TEST-RENAMED'),{ ...fields,mappings:JSON.stringify({ '1':{ kind:'SEGMENT',installedCoreCount:4,capacityValidated:true } }) }),201)
       assert.equal((await request(`imports/${unsafe.id}/publish`,'POST')).status,409)
       assert.equal((await usage(imported.id)).total,8);assert.equal((await usage(imported.id)).booked,6)
       const current=(await pool.query('SELECT version FROM network_segments WHERE id=$1',[imported.id])).rows[0].version
@@ -400,7 +401,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       assert.equal(replay.datasetId,preview.datasetId)
       const stored=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_areas WHERE external_id='district-1'")).rows[0]
       assert.equal(stored.name,'Reference District');assert.equal(stored.type,'ST_Polygon')
-      const storedFeature=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_features WHERE external_id='placemark-2'")).rows[0]
+      const storedFeature=(await pool.query("SELECT name,ST_GeometryType(geometry) AS type FROM reference_features WHERE external_id='unmapped-point'")).rows[0]
       assert.equal(storedFeature.name,'Unmapped asset');assert.equal(storedFeature.type,'ST_Point')
       const map=await data(await request(`network/map?entityId=${alpha.entityId}&bbox=106.7,-6.4,107,-6.1&layers=areas,references`),200)
       assert.ok(map.features.length>=2)
@@ -411,6 +412,33 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const mappedReference=map.features.find((feature)=>feature.properties.layer==='references' && feature.properties.name==='Unmapped asset')
       assert.equal(mappedReference.geometry.type,'Point')
       assert.equal(mappedReference.properties.attributes.treeId,'placemark-xhr9wha03')
+    })
+    await t.test('KML type suggestions become operational segment/POP only after explicit row confirmation',async () => {
+      const xml=Buffer.from(`<kml><Document>
+        <Placemark id="source-pop"><name>POP RANTAU PRAPAT</name><Point><coordinates>99.8457,2.0891</coordinates></Point></Placemark>
+        <Placemark id="source-cable"><name>BB-96 3000</name><LineString><coordinates>99.8457,2.0891 99.8460,2.0889</coordinates></LineString></Placemark>
+        <Placemark id="source-reference"><name>Label tanpa tipe</name><Point><coordinates>99.8470,2.0880</coordinates></Point></Placemark>
+      </Document></kml>`)
+      const preview=await data(await upload('imports','smart-kml.kml',xml,{ entityId:alpha.entityId,sourceSystem:'smart-kml-confirm' }),201)
+      assert.equal(preview.status,'PREVIEW');assert.equal(preview.rows.length,0);assert.equal(preview.referenceFeatures.length,3);assert.equal(preview.errors.length,0)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM pops WHERE source_system='smart-kml-confirm'")).rows[0].n,0)
+      const popPreview=await data(await request(`imports/${preview.id}/rows/1/confirm-classification`,'POST',{ kind:'POP',code:'POP-RTP' }),201)
+      assert.equal(popPreview.rows.length,1);assert.equal(popPreview.referenceFeatures.length,2)
+      const segmentPreview=await data(await request(`imports/${preview.id}/rows/2/confirm-classification`,'POST',{ kind:'SEGMENT',code:'BB-96',cableName:'BB-96 3000' }),201)
+      assert.equal(segmentPreview.rows.length,2);assert.equal(segmentPreview.referenceFeatures.length,1)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM pops WHERE source_system='smart-kml-confirm'")).rows[0].n,0)
+      const published=await data(await request(`imports/${preview.id}/publish`,'POST'),201)
+      assert.equal(published.status,'PUBLISHED')
+      const pop=(await pool.query("SELECT code FROM pops WHERE source_system='smart-kml-confirm'")).rows[0]
+      assert.equal(pop.code,'POP-RTP')
+      const segment=(await pool.query("SELECT segment_code,cable_name,installed_core_count,start_node_id FROM network_segments WHERE source_system='smart-kml-confirm'")).rows[0]
+      assert.deepEqual(segment,{ segment_code:'BB-96',cable_name:'BB-96 3000',installed_core_count:null,start_node_id:null })
+      const remaining=(await pool.query("SELECT external_id FROM reference_features WHERE source_system='smart-kml-confirm'" )).rows
+      assert.deepEqual(remaining.map((row)=>row.external_id),['source-reference'])
+      const map=await data(await request(`network/map?entityId=${alpha.entityId}&bbox=99.8,2.0,99.9,2.2&layers=pops,segments,references`),200)
+      assert.ok(map.features.some((feature)=>feature.properties.layer==='pops' && feature.properties.name==='POP-RTP'))
+      assert.ok(map.features.some((feature)=>feature.properties.layer==='segments' && feature.properties.name==='BB-96 3000'))
+      assert.ok(map.features.some((feature)=>feature.properties.layer==='references' && feature.properties.name==='Label tanpa tipe'))
     })
     let bulkJob
     await t.test('address-only asset import requires owner-authorized lookup and explicit candidate confirmation before publish',async () => {

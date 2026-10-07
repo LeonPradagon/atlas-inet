@@ -15,9 +15,10 @@ import { JobPanel } from '../src/components/JobPanel'
 import { SettingsPage } from '../src/pages/SettingsPage'
 import { AssetsPage } from '../src/pages/AssetsPage'
 import { NetworkMapPage } from '../src/pages/NetworkMapPage'
+import { SegmentDetail } from '../src/components/SegmentTools'
 import { ReportsPage } from '../src/pages/ReportsPage'
 
-vi.mock('../src/components/NetworkMapCanvas', () => ({ NetworkMapCanvas: ({ onViewportChange, features, focusFeature }: { onViewportChange?: (bbox: string) => void; features: unknown[]; focusFeature?: { properties: { name: string } } | null }) => <div>Map: {features.length} features <span data-testid="map-focus">{focusFeature?.properties.name ?? ''}</span> {onViewportChange && <button onClick={() => onViewportChange('106,-7,107,-6')}>Report viewport</button>}</div> }))
+vi.mock('../src/components/NetworkMapCanvas', () => ({ NetworkMapCanvas: ({ onViewportChange, features }: { onViewportChange?: (bbox: string) => void; features: unknown[] }) => <div>Map: {features.length} features {onViewportChange && <button onClick={() => onViewportChange('106,-7,107,-6')}>Report viewport</button>}</div> }))
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: ReactNode }) => <span>{children}</span> }))
 
 const alpha = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
@@ -156,17 +157,19 @@ describe('operational API interactions', () => {
     await waitFor(() => expect(submit).toHaveBeenCalledWith('upload-real'))
     expect(await screen.findByText('job-real')).toBeTruthy()
   })
-  it('shows automatic application result without a manual publish control', async () => {
-    vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: { id: 'preview-real', rows: [{ rowNumber: 1, kind: 'SEGMENT', code: 'REF' }], areas: [], referenceFeatures: [], errors: [], status: 'PUBLISHED', datasetId: 'dataset-real' } })
-    const publish = vi.spyOn(atlasApi.imports, 'publish')
+  it('requires explicit publish for staged import rows', async () => {
+    vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: { id: 'preview-real', rows: [{ rowNumber: 1, kind: 'SEGMENT', code: 'REF' }], areas: [], referenceFeatures: [], errors: [], status: 'PREVIEW', datasetId: null } })
+    const publish = vi.spyOn(atlasApi.imports, 'publish').mockResolvedValue({ data: { id: 'preview-real', status: 'PUBLISHED', datasetId: 'dataset-real' } })
     mount(<AssetsPage />, ['imports.write'])
     await userEvent.type(screen.getByLabelText('Identitas source system'), 'fixture')
     await userEvent.upload(screen.getByLabelText(/File KML/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
     fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
     await screen.findByText('preview-real')
-    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Terapkan data tervalidasi/ })).toBeNull()
-    expect(publish).not.toHaveBeenCalled()
+    const publishButton = await screen.findByRole('button', { name: /Konfirmasi & terbitkan aset/ })
+    expect(screen.queryByText('Aset terkonfirmasi sudah diterbitkan ke jaringan aktif.')).toBeNull()
+    await userEvent.click(publishButton)
+    expect(await screen.findByText('Aset terkonfirmasi sudah diterbitkan ke jaringan aktif.')).toBeTruthy()
+    expect(publish).toHaveBeenCalledWith('preview-real')
   })
   it('loads saved import preview only after clicking its history button in a modal', async () => {
     const row = { id: 'saved-preview', sourceName: 'saved.kml', sourceSystem: 'fixture-source', status: 'PUBLISHED', datasetId: 'dataset-saved', areasPublishedAt: null, publishedAt: '2026-10-03T00:00:00Z', createdAt: '2026-10-03T00:00:00Z', validRows: 1, referenceAreas: 0, referenceFeatures: 0, errors: 0 }
@@ -181,7 +184,7 @@ describe('operational API interactions', () => {
     expect(get).toHaveBeenCalledTimes(1)
     expect(await screen.findByRole('dialog', { name: 'Preview impor tersimpan' })).toBeTruthy()
     expect(get).toHaveBeenCalledWith(row.id, expect.any(AbortSignal))
-    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
+    expect(await screen.findByText('Aset terkonfirmasi sudah diterbitkan ke jaringan aktif.')).toBeTruthy()
     expect(document.documentElement.style.overflow).toBe('hidden')
     expect(document.body.style.overflow).toBe('hidden')
     await userEvent.click(screen.getByRole('button', { name: 'Tutup preview' }))
@@ -189,12 +192,13 @@ describe('operational API interactions', () => {
     expect(document.documentElement.style.overflow).toBe(originalRootOverflow)
     expect(document.body.style.overflow).toBe(originalBodyOverflow)
   })
-  it('address-only import applies automatically after explicit coordinate confirmation', async () => {
+  it('address-only import stages asset after explicit coordinate confirmation', async () => {
     const initial = { id: 'address-preview', status: 'PREVIEW', datasetId: null, rows: [], areas: [], referenceFeatures: [], errors: [{ rowNumber: 2, code: 'ADDRESS_NEEDS_GEOCODING', message: 'Coordinates required', sourceRow: { kind: 'ODP', code: 'TEST-ODP', address: 'Synthetic address' } }] }
     const lookedUp = { ...initial, errors: [{ ...initial.errors[0], lookupId: 'lookup-real', candidates: [{ latitude: -6.2, longitude: 106.8, label: 'Synthetic candidate', precision: 'street' }] }] }
     vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: initial })
     const geocode = vi.spyOn(atlasApi.imports, 'geocodeRow').mockResolvedValue({ data: lookedUp })
-    const confirm = vi.spyOn(atlasApi.imports, 'confirmCoordinates').mockRejectedValueOnce(new ApiError('Candidates changed', 409)).mockResolvedValue({ data: { ...initial, errors: [], status: 'PUBLISHED', datasetId: 'dataset-real', rows: [{ rowNumber: 2, kind: 'ODP', code: 'TEST-ODP', geometry: { type: 'Point', coordinates: [106.8, -6.2] } }] } })
+    const confirm = vi.spyOn(atlasApi.imports, 'confirmCoordinates').mockRejectedValueOnce(new ApiError('Candidates changed', 409)).mockResolvedValue({ data: { ...initial, errors: [], status: 'PREVIEW', datasetId: 'dataset-real', rows: [{ rowNumber: 2, kind: 'ODP', code: 'TEST-ODP', geometry: { type: 'Point', coordinates: [106.8, -6.2] } }] } })
+    const publish = vi.spyOn(atlasApi.imports, 'publish').mockResolvedValue({ data: { id: 'address-preview', status: 'PUBLISHED', datasetId: 'dataset-real' } })
     mount(<AssetsPage />, ['imports.write'])
     await userEvent.type(screen.getByLabelText('Identitas source system'), 'fixture')
     await userEvent.upload(screen.getByLabelText(/File KML/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
@@ -210,8 +214,11 @@ describe('operational API interactions', () => {
     expect(await screen.findByText('Candidates changed')).toBeTruthy()
     expect(screen.queryByText(/Data lolos validasi/)).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: 'Konfirmasi kandidat 1 baris 2' }))
-    expect(await screen.findByText('Data lolos validasi dan diterapkan otomatis ke jaringan aktif.')).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /Konfirmasi & terbitkan aset/ })).toBeTruthy()
     expect(confirm).toHaveBeenCalledWith('address-preview', 2, 'lookup-real', 0)
+    await userEvent.click(screen.getByRole('button', { name: /Konfirmasi & terbitkan aset/ }))
+    expect(await screen.findByText('Aset terkonfirmasi sudah diterbitkan ke jaringan aktif.')).toBeTruthy()
+    expect(publish).toHaveBeenCalledWith('address-preview')
   })
   it('ambiguous analysis uses only the explicitly selected candidate coordinates', async () => {
     const run = vi.spyOn(atlasApi.analysis, 'run').mockResolvedValueOnce({ data: { status: 'AMBIGUOUS_ADDRESS', provider: 'PHOTON_INTERNAL', datasetVersion: 'synthetic-v1', candidates: [{ latitude: -6.2, longitude: 106.8, label: 'Synthetic candidate', precision: 'street' }], needsSurvey: true } }).mockResolvedValue({ data: { status: 'NO_NETWORK_IN_RADIUS', coordinates: { latitude: -6.2, longitude: 106.8 }, estimatedCableLengthM: null, needsSurvey: true } })
@@ -320,21 +327,36 @@ describe('operational API interactions', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Report viewport' }))
     expect(await screen.findByText('2 dari 1001 fitur dimuat')).toBeTruthy()
     expect(map).toHaveBeenCalledTimes(2)
-    expect(map.mock.calls[0].slice(0, 4)).toEqual([alpha, '106,-7,107,-6', 'segments,poles,odc,odp,areas,references', 1])
+    expect(map.mock.calls[0].slice(0, 4)).toEqual([alpha, '106,-7,107,-6', 'segments,poles,odc,odp,pops,areas,references', 1])
     expect(screen.getByText('Map: 2 features')).toBeTruthy()
   })
-  it('searches network across entity and focuses selected result on map', async () => {
-    const search = vi.spyOn(atlasApi.network, 'search').mockResolvedValue({ data: [
-      { type: 'Feature', id: 'odcs:odc-real', properties: { id: 'odc-real', name: 'ODC CENTRAL', layer: 'odc' }, geometry: { type: 'Point', coordinates: [106.81, -6.2] } },
-      { type: 'Feature', id: 'odps:odp-real', properties: { id: 'odp-real', name: 'ODP CENTRAL', layer: 'odp' }, geometry: { type: 'Point', coordinates: [106.82, -6.2] } },
-    ] as never, meta: { page: 1, pageSize: 15, total: 2 } })
+  it('shows localized cable and capacity detail with a 7/9 meter pole filter on map only', async () => {
+    vi.spyOn(atlasApi.network, 'segment').mockResolvedValue({ data: {
+      id: segment, ownerEntityId: alpha, segmentCode: 'SEG-1', cableName: 'Kabel uji', datasetVersion: 'v1', version: 1,
+      installedCoreCount: 24, capacityValidated: false, installationMethod: 'AERIAL', roadSide: 'LEFT', status: 'ACTIVE',
+      cableType: { id: 'type-id', code: 'FO', name: 'Fiber Optic' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] },
+      capacity: { total: null, used: 3, booked: 4, idle: null, available: null, waitingCount: 2, waitingCores: 5, asOf: '2026-10-06T00:00:00Z', expiryPendingCount: 0 },
+      completeness: { status: 'INCOMPLETE', missingFields: ['validatedCapacity'] },
+      assets: { poles: [{ id: 'pole-7', code: 'P7', heightM: 7 }, { id: 'pole-9', code: 'P9', heightM: 9 }], odcs: [{ id: 'odc', code: 'ODC-1' }], odps: [{ id: 'odp', code: 'ODP-1' }] },
+    } } as never)
+    mount(<SegmentDetail id={segment} mapContext />, ['network.read'])
+    expect(await screen.findByText('Detail aset jaringan pada peta')).toBeTruthy()
+    expect(await screen.findByText('Jumlah core terpasang')).toBeTruthy()
+    expect(screen.getByText('24')).toBeTruthy()
+    expect(screen.getByText('Core dipesan (Booked)')).toBeTruthy()
+    expect(screen.getByText('Waiting List · permintaan')).toBeTruthy()
+    expect(screen.getByText('Tiang (2): P7 (7 meter), P9 (9 meter)')).toBeTruthy()
+    await userEvent.selectOptions(screen.getByLabelText('Filter tinggi tiang'), '7')
+    expect(screen.getByText('Tiang (1): P7 (7 meter)')).toBeTruthy()
+    expect(screen.queryByText('P9 (9 meter)')).toBeNull()
+  })
+  it('omits network search while retaining map style and layer filters', () => {
+    const search = vi.spyOn(atlasApi.network, 'search')
     mount(<NetworkMapPage />, ['network.read'])
-    await userEvent.type(screen.getByLabelText('Cari kabel, segmen, atau aset jaringan'), 'CENTRAL')
-    await userEvent.click(await screen.findByRole('button', { name: /ODP CENTRAL.*navigasi ke peta/ }))
-    expect(search).toHaveBeenCalledWith(alpha, 'CENTRAL', expect.any(AbortSignal))
-    expect(screen.getByRole('heading', { name: 'ODC' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: 'ODP' })).toBeTruthy()
-    expect(screen.getByTestId('map-focus').textContent).toBe('ODP CENTRAL')
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByLabelText('Tampilan peta')).toBeTruthy()
+    expect(screen.getByLabelText('Segmen jaringan')).toBeTruthy()
+    expect(search).not.toHaveBeenCalled()
   })
   it('monitoring export creates a job, not an immediate fabricated file', async () => {
     const exportJob = vi.spyOn(atlasApi.reports, 'export').mockResolvedValue({ data: { id: 'export-real', asOf: '2026-10-03T00:00:00Z' } })

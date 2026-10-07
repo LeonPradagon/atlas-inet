@@ -115,6 +115,9 @@ export class NetworkRepository {
       odp: sql`SELECT p.id, p.owner_entity_id, p.dataset_id, p.code AS name, 'odp'::text AS layer,
         p.geometry, '{}'::jsonb AS extra
         FROM odps p WHERE p.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(p.geometry, ${bounds})`,
+      pops: sql`SELECT p.id, p.owner_entity_id, p.dataset_id, p.code AS name, 'pops'::text AS layer,
+        p.geometry, '{}'::jsonb AS extra
+        FROM pops p WHERE p.owner_entity_id = ${query.entityId}::uuid AND ST_Intersects(p.geometry, ${bounds})`,
       areas: sql`SELECT a.id, a.owner_entity_id, a.dataset_id, a.name, 'areas'::text AS layer,
         ST_CollectionExtract(ST_Intersection(a.geometry, ${bounds}), 3) AS geometry,
         jsonb_build_object('areaCode', a.code, 'referenceOnly', true, 'attributes', a.properties) AS extra
@@ -164,6 +167,10 @@ export class NetworkRepository {
         UNION ALL
         SELECT p.id::text, p.code, 'odp'::text, NULL::text, p.geometry, 3
         FROM odps p JOIN network_datasets d ON d.id=p.dataset_id AND d.owner_entity_id=p.owner_entity_id
+        WHERE p.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED' AND p.code ILIKE ${pattern} ESCAPE '!'
+        UNION ALL
+        SELECT p.id::text, p.code, 'pops'::text, NULL::text, p.geometry, 3
+        FROM pops p JOIN network_datasets d ON d.id=p.dataset_id AND d.owner_entity_id=p.owner_entity_id
         WHERE p.owner_entity_id=${query.entityId}::uuid AND d.status='PUBLISHED' AND p.code ILIKE ${pattern} ESCAPE '!'
       ), ranked AS (
         SELECT *, count(*) OVER()::int AS total FROM candidates

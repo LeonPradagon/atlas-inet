@@ -176,7 +176,7 @@ export function AnalysisPage() {
                       {result.attribution ? <> · {result.attribution}</> : null}
                     </p>
                   )}
-                  {features.length > 0 && <NetworkMapCanvas features={features} visibleLayers={{ segments: true, poles: true, odc: true, odp: true }} search="" style="liberty" />}
+                  {features.length > 0 && <NetworkMapCanvas features={features} visibleLayers={{ segments: true, poles: true, odc: true, odp: true }} style="liberty" />}
                   {result.estimatedCableLengthM != null && <div className="alert alert-warning mt-3">Hasil estimasi awal; tetap wajib diverifikasi melalui survei lapangan.</div>}
                 </>
               ) : (
@@ -229,7 +229,7 @@ export function AnalysisPage() {
             {upload.data && (
               <>
                 <p>Total {upload.data.meta?.total} Placemark. Preview maksimal 100; marker yang valid ditampilkan di peta.</p>
-                {bulkFeatures.length > 0 && <NetworkMapCanvas features={bulkFeatures} visibleLayers={{ analysis: true }} search="" style="liberty" />}
+                {bulkFeatures.length > 0 && <NetworkMapCanvas features={bulkFeatures} visibleLayers={{ analysis: true }} style="liberty" />}
                 <div className="table-responsive">
                   <table className="table table-sm">
                     <thead>

@@ -77,6 +77,7 @@ export const poles = pgTable('poles', {
 ])
 export const odcs = pgTable('odcs', pointColumns(), (table) => pointConstraints('odcs', table))
 export const odps = pgTable('odps', pointColumns(), (table) => pointConstraints('odps', table))
+export const pops = pgTable('pops', pointColumns(), (table) => pointConstraints('pops', table))
 
 export const referenceAreas = pgTable('reference_areas', {
   id: uuid('id').primaryKey().defaultRandom(),

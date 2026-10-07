@@ -211,6 +211,16 @@ body {
   text-transform: capitalize;
 }
 
+.maplibregl-popup-content .network-map-popup-inference {
+  margin: 0.55rem 0 0;
+  padding: 0.5rem 0.65rem;
+  border-left: 3px solid #0d6efd;
+  border-radius: 0.2rem;
+  background: #eff6ff;
+  color: #344054;
+  font-size: 0.78rem;
+}
+
 .maplibregl-popup-content .network-map-popup-details {
   display: grid;
   grid-template-columns: minmax(8rem, 38%) minmax(0, 1fr);
@@ -219,6 +229,28 @@ body {
   overflow: auto;
   color: #344054;
   font-size: 0.9rem;
+}
+
+.network-map-popup-source {
+  margin-top: 0.65rem;
+  border-top: 1px solid #e4e7ec;
+}
+
+.network-map-popup-source summary {
+  padding: 0.6rem 0.1rem 0.2rem;
+  color: #344054;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.network-map-popup-source[open] summary {
+  margin-bottom: 0.25rem;
+}
+
+.network-map-popup-source .network-map-popup-details {
+  margin-top: 0.25rem;
+  font-size: 0.82rem;
 }
 
 .network-map-popup-details dt,

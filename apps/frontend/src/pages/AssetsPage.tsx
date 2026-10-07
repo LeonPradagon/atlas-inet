@@ -1,19 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { atlasApi, errorMessage } from '../shared/api'
+import { atlasApi } from '../shared/api'
 import { domainKey, useEntityScope } from '../shared/EntityScope'
 import { ContentCard } from '../components/ContentCard'
 import { dateLabel, Field, MutationStatus, Pagination, QueryState, useDomainMutation } from '../components/DomainUi'
 import { SegmentDetail } from '../components/SegmentTools'
 import { CableTypesPanel } from '../components/CableTypesPanel'
 import type { ImportPreview, ImportPreviewSummary } from '../shared/domain-types'
+import { classifyKmlCandidate, type KmlCandidateKind } from '../shared/kml-classification'
 export function AssetsPage() {
   const { entity, user, can } = useEntityScope()
   const [file, setFile] = useState<File | null>(null), [source, setSource] = useState(''), [mappings, setMappings] = useState('')
   const [page, setPage] = useState(1), [selected, setSelected] = useState('')
   const [importPage, setImportPage] = useState(1), [activePreview, setActivePreview] = useState<ImportPreviewSummary | null>(null)
   const previewDialog = useRef<HTMLDialogElement>(null)
-  const upload = useDomainMutation(() => atlasApi.imports.preview(entity!.id, source, file!, mappings))
+  const upload = useDomainMutation((mappingText: string) => atlasApi.imports.preview(entity!.id, source, file!, mappingText))
   const history = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'import-previews', importPage), queryFn: ({ signal }) => atlasApi.imports.list(entity!.id, importPage, signal), enabled: Boolean(entity) && can('imports.write') })
   const savedPreview = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'import-preview', activePreview?.id), queryFn: ({ signal }) => atlasApi.imports.get(activePreview!.id, signal), enabled: Boolean(activePreview && entity) && can('imports.write'), refetchOnMount: 'always' })
   useEffect(() => {
@@ -46,9 +47,9 @@ export function AssetsPage() {
   }
   return <>
     {can('imports.write') && <>
-      <ContentCard title="Import jaringan / aset"><p>Preview → validasi domain → penerapan otomatis untuk data valid. Import merge, tidak menghapus aset/booking.</p>
-      <p className="small">Semua geometri KML/KMZ tampil di peta: Point/LineString yang belum terpetakan sebagai Fitur Referensi, Polygon sebagai Area Referensi. Nama kabel KML diambil persis dari Placemark atau ExtendedData; policy global tidak diubah. Referensi bukan aset/kabel operasional dan tidak memengaruhi kapasitas. Kapasitas, tipe, dan topologi tidak ditebak. Baris aset yang lolos validasi diterapkan otomatis; isi mapping per nomor Placemark jika metadata belum lengkap.</p>
-      <form onSubmit={(event) => { event.preventDefault(); if (!upload.isPending) upload.mutate() }}><fieldset disabled={upload.isPending}>
+      <ContentCard title="Import jaringan / aset"><p>Preview → tinjau saran tipe → konfirmasi → terbitkan. Import merge, tidak menghapus aset/booking.</p>
+      <p className="small">Sistem menyarankan tipe dari nama/folder/atribut KML dan geometri. Placemark yang belum dikonfirmasi tetap referensi. Aset operasional baru dibuat setelah konfirmasi dan penerbitan; kapasitas dan topologi yang tidak tersedia tetap kosong. Mapping JSON manual tetap tersedia untuk pemetaan lanjutan.</p>
+      <form onSubmit={(event) => { event.preventDefault(); if (!upload.isPending) upload.mutate(mappings) }}><fieldset disabled={upload.isPending}>
         <Field name="import-source" label="Identitas source system" value={source} onChange={(value) => { setSource(value); resetPreview() }} />
         <label className="form-label" htmlFor="asset-file">File KML / KMZ · maksimal 20 MB</label><input id="asset-file" className="form-control mb-3" type="file" accept=".kml,.kmz" required onChange={(event) => { setFile(event.target.files?.[0] ?? null); resetPreview() }} />
         <label className="form-label" htmlFor="import-mappings">Mapping KML (JSON opsional; keyed nomor Placemark)</label><textarea id="import-mappings" className="form-control mb-3" rows={3} value={mappings} onChange={(event) => { setMappings(event.target.value); resetPreview() }} />
@@ -67,7 +68,7 @@ export function AssetsPage() {
       </ContentCard>
       {activePreview && <dialog ref={previewDialog} className="import-preview-dialog" aria-labelledby="saved-import-preview-title" onClose={() => setActivePreview(null)}>
         <div className="import-preview-dialog-header"><div><h2 id="saved-import-preview-title" className="h5 mb-1">Preview impor tersimpan</h2><p className="small text-secondary mb-0">{activePreview.sourceName} · {activePreview.sourceSystem}</p></div><button className="btn-close" type="button" aria-label="Tutup preview" onClick={() => { const dialog = previewDialog.current; if (dialog && typeof dialog.close === 'function') dialog.close(); setActivePreview(null) }} /></div>
-        <div className="import-preview-dialog-body"><QueryState query={savedPreview}>{savedPreview.data && <ImportStagingReview key={savedPreview.data.data.id} initial={savedPreview.data.data} uploading={false} autoRetry />}</QueryState></div>
+        <div className="import-preview-dialog-body"><QueryState query={savedPreview}>{savedPreview.data && <ImportStagingReview key={savedPreview.data.data.id} initial={savedPreview.data.data} uploading={false} />}</QueryState></div>
       </dialog>}
     </>}
     {can('network.read') && <ContentCard title="Segmen jaringan published"><QueryState query={list} empty={list.data?.data.length === 0}><div className="table-responsive"><table className="table table-striped"><thead><tr><th>Segmen / kabel</th><th>Status</th><th>Kelengkapan</th><th>Version</th></tr></thead><tbody>{list.data?.data.map((row) => <tr key={row.id}><td><button className="btn btn-link p-0 text-start" onClick={() => setSelected(row.id)}>{row.segmentCode} · {row.cableName}</button></td><td>{row.status}</td><td>{row.completeness.status}</td><td>{row.version}</td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={list.data?.meta} setPage={setPage} /></ContentCard>}
@@ -75,37 +76,61 @@ export function AssetsPage() {
     {(can('network.read') || can('network.master-write')) && <CableTypesPanel />}
   </>
 }
-function ImportStagingReview({ initial, uploading, autoRetry = false }: { initial: ImportPreview; uploading: boolean; autoRetry?: boolean }) {
+function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; uploading: boolean }) {
   const [preview, setPreview] = useState(initial)
-  const [errorPage, setErrorPage] = useState(1), [rowPage, setRowPage] = useState(1)
-  const autoRetryAttempted = useRef(false)
+  const [errorPage, setErrorPage] = useState(1), [rowPage, setRowPage] = useState(1), [classificationPage, setClassificationPage] = useState(1)
+  const [assetCodes, setAssetCodes] = useState<Record<number, string>>({})
+  const [selectedKinds, setSelectedKinds] = useState<Record<number, string>>({})
+  const [poleHeights, setPoleHeights] = useState<Record<number, string>>({})
   const geocode = useDomainMutation((rowNumber: number) => atlasApi.imports.geocodeRow(preview.id, rowNumber))
   const confirm = useDomainMutation((input: { rowNumber: number; lookupId: string; index: number }) => atlasApi.imports.confirmCoordinates(preview.id, input.rowNumber, input.lookupId, input.index))
+  const confirmClassification = useDomainMutation((input: { rowNumber: number; kind: 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP'; code: string; cableName?: string; heightM?: 7 | 9 }) => atlasApi.imports.confirmClassification(preview.id, input.rowNumber, input))
   const publish = useDomainMutation(() => atlasApi.imports.publish(preview.id))
-  const disabled = uploading || geocode.isPending || confirm.isPending || publish.isPending || preview.status !== 'PREVIEW'
+  const disabled = uploading || geocode.isPending || confirm.isPending || confirmClassification.isPending || publish.isPending || preview.status !== 'PREVIEW'
   const unmappedFeatures = preview.referenceFeatures.filter((feature) => !feature.assetRowValid).length
-  useEffect(() => {
-    if (!autoRetry || autoRetryAttempted.current || preview.status !== 'PREVIEW' || preview.errors.length || !preview.rows.length) return
-    autoRetryAttempted.current = true
-    publish.mutate(undefined, {
-      onSuccess: (response) => setPreview((current) => ({ ...current, status: response.data.status, datasetId: response.data.datasetId, autoPublishError: null })),
-      onError: (error) => setPreview((current) => ({ ...current, autoPublishError: errorMessage(error) })),
-    })
-  }, [autoRetry, preview.id])
+  const suggestions = useMemo(() => preview.referenceFeatures.flatMap((feature) => {
+    if (feature.assetRowValid) return []
+    const properties = feature.properties ?? {}
+    const suggestion = classifyKmlCandidate({ name: feature.name, geometryType: feature.geometry.type, folderPath: properties.kmlFolderPath, attributes: properties })
+    return suggestion ? [{ feature, suggestion }] : []
+  }), [preview.referenceFeatures])
+  const visibleSuggestions = suggestions.slice((classificationPage - 1) * 20, classificationPage * 20)
   const errors = preview.errors.slice((errorPage - 1) * 25, errorPage * 25)
-  return <><hr /><p>ID preview: <code>{preview.id}</code> · {preview.rows.length} aset jaringan valid · {preview.areas.length} Area Referensi · {preview.referenceFeatures.length} geometri titik/garis di peta ({unmappedFeatures} belum terpetakan) · {preview.errors.length} error. Referensi tidak dihitung sebagai aset/kabel operasional.</p>
+  return <><hr /><p>ID preview: <code>{preview.id}</code> · {preview.rows.length} aset jaringan menunggu penerbitan · {preview.areas.length} Area Referensi · {preview.referenceFeatures.length} geometri titik/garis di peta ({unmappedFeatures} belum terpetakan) · {preview.errors.length} error.</p>
+    {suggestions.length > 0 && <details className="mb-3"><summary>Saran klasifikasi KML ({suggestions.length})</summary>
+      <p className="small text-secondary mt-2">Saran perlu dikonfirmasi per Placemark sebelum menjadi aset operasional.</p>
+      <div className="table-responsive"><table className="table table-sm align-middle"><thead><tr><th>Placemark / saran</th><th>Tipe aset</th><th>Kode aset</th><th>Detail wajib</th><th /></tr></thead><tbody>
+        {visibleSuggestions.map(({ feature, suggestion }) => {
+          const isLine = feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString'
+          const suggestedKinds: Record<KmlCandidateKind, string> = { cable: 'SEGMENT', POP: 'POP', ODC: 'ODC', ODP: 'ODP', pole: 'POLE', FDT: '', FAT: '', OLT: '', ODF: '', slack: '' }
+          const kind = selectedKinds[feature.rowNumber] ?? suggestedKinds[suggestion.kind]
+          const code = assetCodes[feature.rowNumber] ?? (feature.properties?.code || feature.name).slice(0, 200)
+          const height = poleHeights[feature.rowNumber] ?? ''
+          return <tr key={feature.rowNumber}>
+            <td><strong>{feature.name}</strong><br /><small>Saran: {suggestion.label} · {suggestion.evidence} · baris {feature.rowNumber}</small></td>
+            <td><select className="form-select form-select-sm" aria-label={`Tipe aset baris ${feature.rowNumber}`} value={kind} disabled={disabled} onChange={(event) => setSelectedKinds((current) => ({ ...current, [feature.rowNumber]: event.target.value }))}>
+              <option value="">Pilih tipe…</option>{isLine ? <option value="SEGMENT">Segmen kabel</option> : <><option value="NODE">Node jaringan</option><option value="POLE">Tiang</option><option value="ODC">ODC</option><option value="ODP">ODP</option><option value="POP">POP</option></>}
+            </select></td>
+            <td><input className="form-control form-control-sm" aria-label={`Kode aset baris ${feature.rowNumber}`} maxLength={200} value={code} disabled={disabled} onChange={(event) => setAssetCodes((current) => ({ ...current, [feature.rowNumber]: event.target.value }))} /></td>
+            <td>{kind === 'POLE' ? <select className="form-select form-select-sm" aria-label={`Tinggi tiang baris ${feature.rowNumber}`} value={height} disabled={disabled} onChange={(event) => setPoleHeights((current) => ({ ...current, [feature.rowNumber]: event.target.value }))}><option value="">Pilih tinggi…</option><option value="7">7 m</option><option value="9">9 m</option></select> : kind === 'SEGMENT' ? <span className="small">Nama kabel: {feature.name}; kapasitas/topologi kosong sampai diisi.</span> : <span className="small">Lokasi dari KML; relasi segmen belum diisi.</span>}</td>
+            <td><button className="btn btn-outline-primary btn-sm text-nowrap" type="button" disabled={disabled || !kind || !code.trim() || (kind === 'POLE' && !height)} onClick={() => confirmClassification.mutate({ rowNumber: feature.rowNumber, kind: kind as 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP', code, ...(kind === 'SEGMENT' ? { cableName: feature.name } : {}), ...(kind === 'POLE' && height ? { heightM: Number(height) as 7 | 9 } : {}) }, { onSuccess: (response) => { setPreview(response.data); setClassificationPage(1) } })}>Konfirmasi tipe</button></td>
+          </tr>
+        })}
+      </tbody></table></div>
+      <Pagination page={classificationPage} meta={{ page: classificationPage, pageSize: 20, total: suggestions.length }} setPage={setClassificationPage} />
+    </details>}
     {preview.errors.length > 0 && <div className="alert alert-warning"><ul>{errors.map((row) => <li key={row.rowNumber} className="mb-3">Baris {row.rowNumber}: {row.message}
       {row.sourceRow && <><p className="small mb-1">{row.sourceRow.kind} · {row.sourceRow.code} · {row.sourceRow.address}</p><button className="btn btn-outline-primary btn-sm" disabled={disabled} onClick={() => geocode.mutate(row.rowNumber, { onSuccess: (response) => setPreview(response.data) })}>Cari koordinat baris {row.rowNumber}</button>
         {row.candidates?.map((candidate, index) => <div key={index} className="mt-2"><span>{candidate.label} · {candidate.latitude}, {candidate.longitude} · {candidate.precision ?? 'Perlu verifikasi'}</span> <button className="btn btn-outline-primary btn-sm" disabled={disabled || !row.lookupId} onClick={() => confirm.mutate({ rowNumber: row.rowNumber, lookupId: row.lookupId!, index }, { onSuccess: (response) => { setPreview(response.data); setErrorPage(1) } })}>Konfirmasi kandidat {index + 1} baris {row.rowNumber}</button></div>)}</>}
     </li>)}</ul><Pagination page={errorPage} meta={{ page: errorPage, pageSize: 25, total: preview.errors.length }} setPage={setErrorPage} /></div>}
     {geocode.isPending && <p role="status">Mencari koordinat melalui geocoder internal…</p>}
-     {(preview.areasPublishedAt || preview.referenceFeatures.length > 0) && <p className="small text-secondary">Layer referensi diterapkan otomatis. Fitur tanpa mapping tetap referensi; tidak dihitung sebagai aset/kabel operasional.</p>}
-     {preview.status === 'PUBLISHED' && <div className="alert alert-success" role="status">Data lolos validasi dan diterapkan otomatis ke jaringan aktif.</div>}
-     {preview.autoPublishError && <div className="alert alert-warning" role="status">Penerapan aset otomatis tertahan: {preview.autoPublishError}. Perbaiki validasi yang disebutkan lalu buka kembali preview untuk mencoba otomatis lagi.</div>}
-     {preview.status === 'PREVIEW' && !preview.autoPublishError && !preview.errors.length && !preview.rows.length && <div className="alert alert-info" role="status">Tidak ada baris aset operasional; fitur referensi yang valid sudah diterapkan otomatis.</div>}
-     {preview.status === 'PREVIEW' && !preview.autoPublishError && preview.errors.length > 0 && <div className="alert alert-info" role="status">Baris yang valid tetap di preview sampai semua error impor diperbaiki. Layer referensi sudah diterapkan otomatis.</div>}
-    {geocode.isError && <MutationStatus mutation={geocode} />}{confirm.isError && <MutationStatus mutation={confirm} />}
-    <p className="form-text">Konfirmasi kandidat menyimpan koordinat hanya di staging; belum publish dan tetap perlu verifikasi lokasi aset. Geocoding Photon menggunakan © OpenStreetMap contributors · ODbL 1.0.</p>
+      {(preview.areasPublishedAt || preview.referenceFeatures.length > 0) && <p className="small text-secondary">Geometri referensi tetap tersedia. Hanya aset yang dikonfirmasi dan diterbitkan yang menjadi operasional.</p>}
+      {preview.status === 'PUBLISHED' && <div className="alert alert-success" role="status">Aset terkonfirmasi sudah diterbitkan ke jaringan aktif.</div>}
+      {preview.status === 'PREVIEW' && !preview.errors.length && preview.rows.length > 0 && <div className="alert alert-info d-flex flex-wrap align-items-center justify-content-between gap-2" role="status"><span>{preview.rows.length} aset menunggu konfirmasi akhir. Kapasitas/topologi kosong tidak ditebak.</span><button className="btn btn-primary btn-sm" type="button" disabled={disabled} onClick={() => publish.mutate(undefined, { onSuccess: (response) => setPreview((current) => ({ ...current, status: response.data.status, datasetId: response.data.datasetId, referenceFeatures: current.referenceFeatures.filter((feature) => !feature.assetRowValid) })) })}>Konfirmasi &amp; terbitkan aset</button></div>}
+      {preview.status === 'PREVIEW' && !preview.errors.length && !preview.rows.length && <div className="alert alert-info" role="status">Belum ada aset yang dikonfirmasi. Geometri sumber tetap sebagai referensi.</div>}
+      {preview.status === 'PREVIEW' && preview.errors.length > 0 && <div className="alert alert-info" role="status">Selesaikan error impor sebelum menerbitkan aset. Geometri referensi tetap tersedia.</div>}
+     {geocode.isError && <MutationStatus mutation={geocode} />}{confirm.isError && <MutationStatus mutation={confirm} />}{confirmClassification.isError && <MutationStatus mutation={confirmClassification} />}{publish.isError && <MutationStatus mutation={publish} />}
+     <p className="form-text">Kapasitas dan relasi jaringan tidak terisi otomatis. Geocoding Photon menggunakan © OpenStreetMap contributors · ODbL 1.0.</p>
       {preview.rows.length > 0 ? <details><summary>Preview baris {(rowPage - 1) * 100 + 1}–{Math.min(rowPage * 100, preview.rows.length)} dari {preview.rows.length}</summary><table className="table table-sm"><thead><tr><th>Baris</th><th>Kind</th><th>Code</th><th>Nama kabel dari KML</th><th>Koordinat / sumber</th></tr></thead><tbody>{preview.rows.slice((rowPage - 1) * 100, rowPage * 100).map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.kind}</td><td>{row.code}</td><td>{row.cableName ?? '—'}</td><td>{row.geometry && JSON.stringify(row.geometry)}<br />{row.geocoding?.provider} {row.geocoding?.datasetVersion}</td></tr>)}</tbody></table><Pagination page={rowPage} meta={{ page: rowPage, pageSize: 100, total: preview.rows.length }} setPage={setRowPage} /></details> : <p className="text-secondary small">Tidak ada baris aset operasional valid di preview ini.</p>}
    </>
 }

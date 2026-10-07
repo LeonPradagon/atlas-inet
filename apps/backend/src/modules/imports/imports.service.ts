@@ -1,13 +1,13 @@
-import { ConflictException, HttpException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common'
+import { ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common'
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import { DatabaseService } from '../../database/database.service.js'
 import type { Transaction } from '../../database/transaction.js'
-import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDatasets, networkNodes, networkSegments, odcs, odps, poles, referenceAreas, referenceFeatures, segmentOdcs, segmentOdps, segmentPoles } from '../../database/schema/index.js'
+import { auditLogs, cableNameHistory, cableTypes, importPreviews, networkDatasets, networkNodes, networkSegments, odcs, odps, pops, poles, referenceAreas, referenceFeatures, segmentOdcs, segmentOdps, segmentPoles } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
 import { validateCableName, validateImportedCableName } from '../assets/assets.service.js'
 import { readUsage } from '../capacity/capacity.repository.js'
-import { assetRowSchema, pointAddressSchema, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
+import { assetClassificationSchema, assetRowSchema, pointAddressSchema, type AssetClassificationInput, type AssetRow, type ImportError, type ReferenceAreaRow, type ReferenceFeatureRow, parseAssetFile } from './import-parser.js'
 import type { UploadFile } from '../files/tabular-files.js'
 import { InternalAdapters } from '../analysis/internal-adapters.js'
 import { parseInput } from '../../common/domain-input.js'
@@ -21,6 +21,7 @@ async function fingerprint(db: Db, entityId: string, sourceSystem: string) {
     UNION ALL SELECT 'pole:' || to_jsonb(s)::text FROM poles s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'odc:' || to_jsonb(s)::text FROM odcs s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'odp:' || to_jsonb(s)::text FROM odps s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
+    UNION ALL SELECT 'pop:' || to_jsonb(s)::text FROM pops s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'reference-area:' || to_jsonb(s)::text FROM reference_areas s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
     UNION ALL SELECT 'reference-feature:' || to_jsonb(s)::text FROM reference_features s WHERE owner_entity_id=${entityId}::uuid AND source_system=${sourceSystem}
   ) state`)
@@ -29,17 +30,6 @@ async function fingerprint(db: Db, entityId: string, sourceSystem: string) {
 const geom = (row: { geometry: unknown }) => sql`ST_SetSRID(ST_GeomFromGeoJSON(${JSON.stringify(row.geometry)}),4326)`
 const referenceDatasetVersion = (previewId: string) => `reference-${previewId}`
 const operationalDatasetVersion = (previewId: string) => `import-${previewId}`
-
-function autoPublishError(error: unknown) {
-  if (!(error instanceof HttpException)) return 'Penerapan otomatis gagal karena kesalahan sistem.'
-  const response = error.getResponse()
-  if (typeof response === 'string') return response
-  if (response && typeof response === 'object' && 'message' in response) {
-    const message = response.message
-    return Array.isArray(message) ? message.join('; ') : String(message)
-  }
-  return error.message
-}
 
 @Injectable()
 export class ImportsService {
@@ -57,10 +47,7 @@ export class ImportsService {
     })
     const hasReferences = parsed.areas.length > 0 || parsed.referenceFeatures.length > 0
     const references = hasReferences ? await this.publishAreas(userId, preview.id) : { data: preview }
-    const applied = parsed.errors.length === 0 && parsed.rows.length > 0
-      ? await this.autoPublishIfReady(userId, preview.id)
-      : references
-    return { data: applied.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, operationalAutoPublished: applied.data.status === 'PUBLISHED' } }
+    return { data: references.data, meta: { valid: parsed.rows.length, referenceAreas: parsed.areas.length, referenceFeatures: parsed.referenceFeatures.length, invalid: parsed.errors.length, referenceAutoPublished: hasReferences, operationalAutoPublished: false } }
   }
 
   async get(userId: string, id: string) {
@@ -135,18 +122,35 @@ export class ImportsService {
       await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_COORDINATES_CONFIRMED', resourceId: id, details: { rowNumber, provider: row.geocoding?.provider, datasetVersion: row.geocoding?.datasetVersion, coordinates: row.geometry.coordinates } })
       return { data: record }
     })
-    return this.autoPublishIfReady(userId, id)
+    return this.get(userId, id)
   }
 
-  private async autoPublishIfReady(userId: string, id: string) {
+  async confirmClassification(userId: string, id: string, rowNumber: number, rawInput: AssetClassificationInput) {
+    const input = parseInput(assetClassificationSchema, rawInput)
     const { data: preview } = await this.get(userId, id)
-    if (preview.status !== 'PREVIEW' || preview.errors.length || !preview.rows.length) return { data: preview }
-    try {
-      await this.publish(userId, id)
-    } catch (error) {
-      await this.database.db.update(importPreviews).set({ autoPublishError: autoPublishError(error) }).where(eq(importPreviews.id, id))
-    }
-    return this.get(userId, id)
+    return this.database.db.transaction(async (tx) => {
+      const [current] = await tx.select().from(importPreviews).where(eq(importPreviews.id, id)).for('update')
+      if (current.status !== 'PREVIEW') throw new ConflictException('Published import cannot be changed')
+      const referenceRows = current.referenceFeatures as ReferenceFeatureRow[]
+      const reference = referenceRows.find((row) => row.rowNumber === rowNumber && row.assetRowValid !== true)
+      if (!reference) throw new ConflictException('This Placemark is no longer awaiting classification')
+      const rows = current.rows as AssetRow[]
+      if (rows.some((row) => row.rowNumber === rowNumber)) throw new ConflictException('Import row was already classified')
+      if (rows.some((row) => row.kind === input.kind && row.code === input.code)) throw new ConflictException(`Duplicate ${input.kind} code: ${input.code}`)
+      const row = parseInput(assetRowSchema, {
+        ...input,
+        rowNumber,
+        externalId: reference.externalId,
+        geometry: reference.geometry,
+        ...(input.kind === 'SEGMENT' && !input.cableName ? { cableName: reference.name } : {}),
+      })
+      const updatedReferences = referenceRows.filter((feature) => feature.rowNumber !== rowNumber)
+      const updatedRows = [...rows, row].sort((left, right) => left.rowNumber - right.rowNumber)
+      const [record] = await tx.update(importPreviews).set({ rows: updatedRows, referenceFeatures: updatedReferences }).where(eq(importPreviews.id, id)).returning()
+      await tx.insert(auditLogs).values({ entityId: preview.entityId, actorId: userId, action: 'IMPORT_CLASSIFICATION_CONFIRMED', resourceId: id,
+        details: { rowNumber, kind: row.kind, code: row.code, externalId: row.externalId } })
+      return { data: record }
+    })
   }
 
   async publishAreas(userId: string, id: string) {
@@ -267,13 +271,14 @@ export class ImportsService {
         segments.set(record.segmentCode, record.id)
         if (existing && existing.cableName !== record.cableName) await tx.insert(cableNameHistory).values({ segmentId: record.id, oldName: existing.cableName, newName: record.cableName, policyVersion, actorId: userId })
       }
-      for (const row of rows.filter((r) => ['POLE','ODC','ODP'].includes(r.kind))) {
-        const table = row.kind === 'POLE' ? poles : row.kind === 'ODC' ? odcs : odps
-        const links = row.kind === 'POLE' ? segmentPoles : row.kind === 'ODC' ? segmentOdcs : segmentOdps
+      for (const row of rows.filter((r) => ['POLE','ODC','ODP','POP'].includes(r.kind))) {
+        const table = row.kind === 'POLE' ? poles : row.kind === 'ODC' ? odcs : row.kind === 'ODP' ? odps : pops
         const [existing] = await tx.select().from(table).where(and(eq(table.ownerEntityId, preview.entityId), eq(table.sourceSystem, preview.sourceSystem), eq(table.externalId, row.externalId)))
-        const data = { ...source, code: row.code, externalId: row.externalId, geometry: geom(row), heightM: row.heightM! }
+        const baseData = { ...source, code: row.code, externalId: row.externalId, geometry: geom(row) }
+        const data = row.kind === 'POLE' ? { ...baseData, heightM: row.heightM! } : baseData
         const [asset] = existing ? await tx.update(table).set(data).where(eq(table.id, existing.id)).returning() : await tx.insert(table).values({ ...data, createdBy: userId }).returning()
-        if (row.segmentCodes !== undefined) {
+        if (row.kind !== 'POP' && row.segmentCodes !== undefined) {
+          const links = row.kind === 'POLE' ? segmentPoles : row.kind === 'ODC' ? segmentOdcs : segmentOdps
           await tx.delete(links).where(eq(links.assetId, asset.id))
           for (const code of row.segmentCodes) {
             const segmentId = segments.get(code)
@@ -303,7 +308,7 @@ export class ImportsService {
       }
       if (rows.length) await tx.delete(referenceFeatures).where(and(
         eq(referenceFeatures.ownerEntityId, preview.entityId), eq(referenceFeatures.sourceSystem, preview.sourceSystem),
-        inArray(referenceFeatures.externalId, rows.map((row) => `placemark-${row.rowNumber}`)),
+        inArray(referenceFeatures.externalId, rows.map((row) => row.externalId)),
       ))
       await tx.update(networkDatasets).set({ version, status: 'PUBLISHED', publishedAt: sql`clock_timestamp()` }).where(eq(networkDatasets.id, dataset.id))
        await tx.update(importPreviews).set({ status: 'PUBLISHED', datasetId: dataset.id, publishedAt: sql`clock_timestamp()`, autoPublishError: null }).where(eq(importPreviews.id, id))

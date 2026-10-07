@@ -5,6 +5,7 @@ import { entityPageSchema, parseInput } from '../../common/domain-input.js'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
 import { uploadLimits, validateUpload, type UploadFile } from '../files/tabular-files.js'
 import { ImportsService } from './imports.service.js'
+import { assetClassificationSchema } from './import-parser.js'
 const uploadSchema = z.object({ entityId: z.uuid(), sourceSystem: z.string().trim().min(1).max(100), mappings: z.string().max(512 * 1024).optional() }).strict()
 @Controller('imports')
 @UseGuards(AuthSessionGuard)
@@ -33,6 +34,11 @@ export class ImportsController {
   confirmCoordinates(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('rowNumber') rowNumber: string, @Body() body: unknown) {
     const input = parseInput(z.object({ lookupId: z.uuid(), candidateIndex: z.number().int().min(0).max(19) }).strict(), body)
     return this.imports.confirmRow(req.authSession.user.id, parseInput(z.uuid(), id), parseInput(z.coerce.number().int().positive(), rowNumber), input.lookupId, input.candidateIndex)
+  }
+  @Post(':id/rows/:rowNumber/confirm-classification')
+  confirmClassification(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Param('rowNumber') rowNumber: string, @Body() body: unknown) {
+    const input = parseInput(assetClassificationSchema, body)
+    return this.imports.confirmClassification(req.authSession.user.id, parseInput(z.uuid(), id), parseInput(z.coerce.number().int().positive(), rowNumber), input)
   }
   @Post(':id/publish')
   publish(@Req() req: AuthenticatedRequest, @Param('id') id: string) {

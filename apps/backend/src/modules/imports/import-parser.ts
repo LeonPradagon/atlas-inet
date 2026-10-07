@@ -33,7 +33,7 @@ const referenceAreaSchema = z.object({
 }).strict()
 export type ReferenceAreaRow = z.infer<typeof referenceAreaSchema>
 const assetFields = z.object({
-  rowNumber: z.number().int().positive(), kind: z.enum(['SEGMENT','NODE','POLE','ODC','ODP']), externalId: z.string().trim().min(1).max(200), code: z.string().trim().min(1).max(200),
+  rowNumber: z.number().int().positive(), kind: z.enum(['SEGMENT','NODE','POLE','ODC','ODP','POP']), externalId: z.string().trim().min(1).max(200), code: z.string().trim().min(1).max(200),
   geometry: geometrySchema, cableName: z.string().trim().min(1).max(200).optional(), cableTypeCode: z.string().trim().min(1).max(200).optional(),
   installedCoreCount: z.number().int().positive().max(1_000_000).optional(), capacityValidated: z.boolean().optional(),
   installationMethod: z.enum(['BURIAL','AERIAL']).optional(), roadSide: z.enum(['LEFT','RIGHT']).optional(),
@@ -41,7 +41,9 @@ const assetFields = z.object({
   address: z.string().trim().min(1).max(1000).optional(),
   geocoding: z.object({ provider: z.string(), datasetVersion: z.string().nullable(), confirmedBy: z.string(), confirmedAt: z.string(), label: z.string(), precision: z.string().optional() }).strict().optional(),
 }).strict()
-export const pointAddressSchema = assetFields.omit({ geometry: true, geocoding: true }).extend({ kind: z.enum(['NODE','POLE','ODC','ODP']), address: z.string().trim().min(1).max(1000) })
+export const assetClassificationSchema = assetFields.omit({ rowNumber: true, externalId: true, geometry: true, geocoding: true })
+export type AssetClassificationInput = z.infer<typeof assetClassificationSchema>
+export const pointAddressSchema = assetFields.omit({ geometry: true, geocoding: true }).extend({ kind: z.enum(['NODE','POLE','ODC','ODP','POP']), address: z.string().trim().min(1).max(1000) })
   .refine((row) => row.kind !== 'POLE' || row.heightM !== undefined, 'Pole requires height 7 or 9')
   .refine((row) => !row.capacityValidated || row.installedCoreCount !== undefined, 'Validated capacity needs installed core')
   .refine((row) => !!row.startNodeCode === !!row.endNodeCode, 'Topology endpoints must be paired')
@@ -120,7 +122,7 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
       const schemaData = extended?.SchemaData
       for (const schema of (Array.isArray(schemaData) ? schemaData : schemaData ? [schemaData] : []) as Record<string, unknown>[]) {
         const simple = schema.SimpleData
-        for (const item of (Array.isArray(simple) ? simple : simple ? [simple] : []) as Record<string, unknown>[]) setMetadata(item, item['#text'] ?? item)
+        for (const item of (Array.isArray(simple) ? simple : simple ? [simple] : []) as Record<string, unknown>[]) setMetadata(item, item['#text'] ?? '')
       }
       const styles = p.Style === undefined ? [] : Array.isArray(p.Style) ? p.Style as Record<string, unknown>[] : [p.Style as Record<string, unknown>]
       for (const style of styles) {
@@ -205,8 +207,8 @@ export async function parseAssetFile(file: UploadFile, mappings: Record<string, 
         geometry = { type: 'MultiLineString', coordinates: (Array.isArray(lines) ? lines : [lines]).map((line) => coords((line as Record<string,unknown>).coordinates)) }
       }
       const code = metadata.code ?? p['@_id']
-      input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: `placemark-${rowNumber}`, name: featureName.slice(0, 500), geometry, assetRowValid: false, properties } : undefined,
-        row: clean({ kind: metadata.kind ?? (geometry && (geometry as { type: string }).type !== 'Point' ? 'SEGMENT' : undefined), externalId: p['@_id'], code, cableName: sourceCableName, geometry, address: p.address, ...(mappings[String(rowNumber)] ?? {}), rowNumber }) })
+       input.push({ rowNumber, reference: geometry ? { rowNumber, externalId: p['@_id'] ?? `placemark-${rowNumber}`, name: featureName.slice(0, 500), geometry, assetRowValid: false, properties } : undefined,
+         row: clean({ kind: metadata.kind, externalId: p['@_id'], code, cableName: sourceCableName, geometry, address: p.address, ...(mappings[String(rowNumber)] ?? {}), rowNumber }) })
     }
   }
   const rows: AssetRow[] = []

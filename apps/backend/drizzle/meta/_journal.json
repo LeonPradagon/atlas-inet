@@ -71,6 +71,13 @@
       "when": 1791243600000,
       "tag": "0009_auto_import_publish",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791320000000,
+      "tag": "0010_pop_assets",
+      "breakpoints": true
     }
   ]
 }

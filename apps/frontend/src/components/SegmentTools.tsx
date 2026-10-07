@@ -27,8 +27,9 @@ export function SegmentPicker({ value, onChange }: { value: string; onChange: (i
     </> : null}
   </div>
 }
-export function SegmentDetail({ id, editable = false }: { id: string; editable?: boolean }) {
+export function SegmentDetail({ id, editable = false, mapContext = false }: { id: string; editable?: boolean; mapContext?: boolean }) {
   const { entity, user, can } = useEntityScope()
+  const [poleHeightFilter, setPoleHeightFilter] = useState('all')
   const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
   const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segment', id), queryFn: async ({ signal }) => {
     const response = await atlasApi.network.segment(id, signal)
@@ -36,16 +37,39 @@ export function SegmentDetail({ id, editable = false }: { id: string; editable?:
     return response
   }, enabled: validId && can('network.read') })
   if (!validId || !can('network.read')) return <p className="text-secondary">Pilih ID segmen dengan izin baca untuk melihat detail kapasitas.</p>
-  return <ContentCard title="Detail segmen"><QueryState query={query}>{query.data && <>
+  return <ContentCard title={mapContext ? 'Detail aset jaringan pada peta' : 'Detail segmen'}><QueryState query={query}>{query.data && <>
     <h4>{query.data.data.cableName}</h4><p className="small text-secondary">{query.data.data.segmentCode} · Dataset {query.data.data.datasetVersion} · {query.data.data.status}</p>
-    <dl className="row"><dt className="col-sm-4">Tipe / instalasi / sisi</dt><dd className="col-sm-8">{query.data.data.cableType?.name ?? 'Belum diketahui'} / {query.data.data.installationMethod ?? '—'} / {query.data.data.roadSide ?? '—'}</dd></dl>
-    <div className="table-responsive"><table className="table table-sm"><tbody>{(['total', 'used', 'booked', 'idle', 'available', 'waitingCount', 'waitingCores'] as const).map((key) => <tr key={key}><th>{key}</th><td>{numberLabel(query.data!.data.capacity[key])}</td></tr>)}</tbody></table></div>
-    <p className="small">Snapshot (Asia/Jakarta): {dateLabel(query.data.data.capacity.asOf)}. Idle mencakup Booked; antrean tidak mengurangi Available.</p>
+    {mapContext ? <dl className="row">
+      <dt className="col-sm-5">Tipe kabel</dt><dd className="col-sm-7">{query.data.data.cableType?.name ?? 'Belum diketahui'}</dd>
+      <dt className="col-sm-5">Metode instalasi</dt><dd className="col-sm-7">{query.data.data.installationMethod === 'AERIAL' ? 'Aerial' : query.data.data.installationMethod === 'BURIAL' ? 'Burial' : 'Belum diketahui'}</dd>
+      <dt className="col-sm-5">Sisi pemasangan</dt><dd className="col-sm-7">{query.data.data.roadSide === 'LEFT' ? 'Kiri jalan' : query.data.data.roadSide === 'RIGHT' ? 'Kanan jalan' : 'Belum diketahui'}</dd>
+    </dl> : <dl className="row"><dt className="col-sm-4">Tipe / instalasi / sisi</dt><dd className="col-sm-8">{query.data.data.cableType?.name ?? 'Belum diketahui'} / {query.data.data.installationMethod ?? '—'} / {query.data.data.roadSide ?? '—'}</dd></dl>}
+    {mapContext ? <div className="table-responsive"><table className="table table-sm"><tbody>
+      <tr><th>Jumlah core terpasang</th><td>{numberLabel(query.data.data.installedCoreCount)}</td></tr>
+      <tr><th>Status validasi kapasitas</th><td>{query.data.data.capacityValidated ? 'Tervalidasi' : 'Belum tervalidasi'}</td></tr>
+      <tr><th>Core terpakai (Used)</th><td>{numberLabel(query.data.data.capacity.used)}</td></tr>
+      <tr><th>Core dipesan (Booked)</th><td>{numberLabel(query.data.data.capacity.booked)}</td></tr>
+      <tr><th>Core idle</th><td>{numberLabel(query.data.data.capacity.idle)}</td></tr>
+      <tr><th>Core tersedia (Available)</th><td>{numberLabel(query.data.data.capacity.available)}</td></tr>
+      <tr><th>Waiting List · permintaan</th><td>{numberLabel(query.data.data.capacity.waitingCount)}</td></tr>
+      <tr><th>Core dalam Waiting List</th><td>{numberLabel(query.data.data.capacity.waitingCores)}</td></tr>
+    </tbody></table></div> : <div className="table-responsive"><table className="table table-sm"><tbody>{(['total', 'used', 'booked', 'idle', 'available', 'waitingCount', 'waitingCores'] as const).map((key) => <tr key={key}><th>{key}</th><td>{numberLabel(query.data!.data.capacity[key])}</td></tr>)}</tbody></table></div>}
+    <p className="small">Snapshot (Asia/Jakarta): {dateLabel(query.data.data.capacity.asOf)}. {mapContext ? 'Core idle mencakup Booked; Waiting List tidak mengurangi Available.' : 'Idle mencakup Booked; antrean tidak mengurangi Available.'}</p>
     {Boolean(query.data.data.capacity.expiryPendingCount) && <div className="alert alert-info">{query.data.data.capacity.expiryPendingCount} booking sudah kedaluwarsa efektif dan tidak mengurangi Available; worker belum memperbarui status persisted.</div>}
     {query.data.data.completeness.status !== 'COMPLETE' && <div className="alert alert-warning">Metadata belum lengkap: {query.data.data.completeness.missingFields.join(', ')}</div>}
-    <p>Tiang: {query.data.data.assets?.poles.map((p) => `${p.code} (${p.heightM} m)`).join(', ') || 'Tidak tercatat'}</p>
-    <p>ODC: {query.data.data.assets?.odcs.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
-    <p>ODP: {query.data.data.assets?.odps.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+    {mapContext ? <section aria-label="Aset tiang">
+      <label className="form-label" htmlFor={`map-pole-height-${id}`}>Filter tinggi tiang</label>
+      <select id={`map-pole-height-${id}`} className="form-select form-select-sm mb-2" value={poleHeightFilter} onChange={(event) => setPoleHeightFilter(event.target.value)}>
+        <option value="all">Semua tinggi</option><option value="7">7 meter</option><option value="9">9 meter</option>
+      </select>
+      <p>Tiang ({query.data.data.assets?.poles.filter((pole) => poleHeightFilter === 'all' || String(pole.heightM) === poleHeightFilter).length ?? 0}): {query.data.data.assets?.poles.filter((pole) => poleHeightFilter === 'all' || String(pole.heightM) === poleHeightFilter).map((pole) => `${pole.code} (${pole.heightM} meter)`).join(', ') || 'Tidak tercatat untuk filter ini'}</p>
+      <p>ODC: {query.data.data.assets?.odcs.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+      <p>ODP: {query.data.data.assets?.odps.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+    </section> : <>
+      <p>Tiang: {query.data.data.assets?.poles.map((p) => `${p.code} (${p.heightM} m)`).join(', ') || 'Tidak tercatat'}</p>
+      <p>ODC: {query.data.data.assets?.odcs.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+      <p>ODP: {query.data.data.assets?.odps.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
+    </>}
     {editable && can('network.write') && <MetadataEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
     {editable && <NameHistoryPanel id={id} />}
   </>}</QueryState></ContentCard>

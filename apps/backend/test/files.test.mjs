@@ -24,14 +24,14 @@ test('KML namespace/folder traversal separates ODC, ODP and lines without invent
   </k:Folder></k:Document></k:kml>`)
   const result=await parseAssetFile(file('test.kml',buffer),{ '2':{ kind:'ODC' },'3':{ kind:'ODP' } })
   assert.deepEqual(result.errors,[])
-  assert.deepEqual(result.rows.map((r) => r.kind),['SEGMENT','ODC','ODP'])
+  assert.deepEqual(result.rows.map((r) => r.kind),['ODC','ODP'])
   assert.equal(result.referenceFeatures.length,3)
-  assert.ok(result.referenceFeatures.every((feature) => feature.assetRowValid))
-  assert.equal(result.rows[0].installedCoreCount,undefined)
+  assert.equal(result.referenceFeatures.filter((feature) => feature.assetRowValid).length,2)
+  assert.equal(result.referenceFeatures.find((feature) => feature.name === 'Test line')?.assetRowValid,false)
 })
 test('KML cable labels are detected from Placemark name or cable_name ExtendedData exactly',async () => {
   const xml='<kml><Document><Placemark id="placemark-id"><name>DB24-FDT10-CWI-LINE-C 1500</name><LineString><coordinates>106.8,-6.2 106.9,-6.2</coordinates></LineString></Placemark><Placemark id="metadata-id"><ExtendedData><Data name="cable_name"><value>FDR-24C-GNB01 950</value></Data><Data name="code"><value>FDR-CODE</value></Data></ExtendedData><LineString><coordinates>106.8,-6.3 106.9,-6.3</coordinates></LineString></Placemark></Document></kml>'
-  const result=await parseAssetFile(file('cable-names.kml',Buffer.from(xml)))
+  const result=await parseAssetFile(file('cable-names.kml',Buffer.from(xml)),{ '1':{ kind:'SEGMENT' },'2':{ kind:'SEGMENT' } })
   assert.equal(result.errors.length,0)
   assert.deepEqual(result.rows.map((row)=>row.cableName),['DB24-FDT10-CWI-LINE-C 1500','FDR-24C-GNB01 950'])
 })
@@ -53,6 +53,14 @@ test('KML reference features preserve placemark properties, styles and folder pa
     'label-opacity':'1',treeId:'placemark-xhr9wha03','label-color':'#ffff00','label-scale':'0.7',
     icon:'http://maps.google.com/mapfiles/kml/shapes/placemark_square.png',kmlFolderPath:'FTTH ALL/POP BANJARSARI',name:'A17',
   })
+})
+test('empty KML SimpleData values do not leak XML attribute objects into feature properties',async () => {
+  const xml='<kml><Document><Placemark id="area"><name>Example area</name><ExtendedData><SchemaData schemaUrl="#schema"><SimpleData name="PROVINSI">SUMATERA UTARA</SimpleData><SimpleData name="UUPP"/></SchemaData></ExtendedData><Polygon><outerBoundaryIs><LinearRing><coordinates>99,-2 100,-2 100,-3 99,-3 99,-2</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark></Document></kml>'
+  const result=await parseAssetFile(file('empty-properties.kml',Buffer.from(xml)))
+  assert.equal(result.areas.length,1)
+  assert.equal(result.areas[0].properties.PROVINSI,'SUMATERA UTARA')
+  assert.equal(result.areas[0].properties.UUPP,'')
+  assert.equal(JSON.stringify(result.areas[0].properties).includes('{"@_name":"UUPP"}'),false)
 })
 test('KML Polygon and polygon-only MultiGeometry stage as non-operational reference areas',async () => {
   const xml=`<kml><Document>

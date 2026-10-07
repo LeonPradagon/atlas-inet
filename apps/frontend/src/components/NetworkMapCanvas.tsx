@@ -9,11 +9,15 @@ import type {
   SymbolLayerSpecification,
 } from 'maplibre-gl'
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
+import { classifyKmlCandidate } from '../shared/kml-classification'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
-export type NetworkMapLayer = 'segments' | 'poles' | 'odc' | 'odp' | 'areas' | 'references'
+export type NetworkMapLayer = 'segments' | 'poles' | 'odc' | 'odp' | 'pops' | 'areas' | 'references'
 export type NetworkMapFeatureLayer = NetworkMapLayer | 'analysis'
 export type NetworkMapStyle = 'liberty' | 'bright' | 'satellite' | '3d'
+
+const NETWORK_LINE_MIN_ZOOM = 13
+const NETWORK_POINT_MIN_ZOOM = 15
 
 export type NetworkMapProperties = {
   id: string
@@ -27,8 +31,6 @@ export type NetworkMapFeature = Feature<Geometry, NetworkMapProperties>
 interface NetworkMapCanvasProps {
   features: NetworkMapFeature[]
   visibleLayers: Partial<Record<NetworkMapFeatureLayer, boolean>>
-  search: string
-  focusFeature?: NetworkMapFeature | null
   style: NetworkMapStyle
   onViewportChange?: (bbox: string) => void
   onSegmentSelect?: (id: string) => void
@@ -41,6 +43,7 @@ const featureColor: ExpressionSpecification = [
   'poles', '#fd7e14',
   'odc', '#6f42c1',
   'odp', '#198754',
+  'pops', '#dc3545',
   'areas', '#ffd400',
   'references', '#d63384',
   'analysis', '#dc3545',
@@ -57,11 +60,56 @@ function layerLabel(layer: string) {
     poles: 'Tiang',
     odc: 'ODC',
     odp: 'ODP',
+    pops: 'POP · aset operasional',
     areas: 'Area referensi',
     references: 'Placemark KML · referensi belum dipetakan',
     analysis: 'Lokasi analisis',
   }
   return labels[layer] ?? layer
+}
+
+const kmlAttributeLabels: Record<string, string> = {
+  OBJECT_ID: 'ID objek', NAMOBJ: 'Nama objek', DESA: 'Desa/kelurahan', KODE: 'Kode wilayah',
+  WADMKD: 'Desa/kelurahan', WIADKD: 'Kode desa/kelurahan',
+  WADMKC: 'Kecamatan', WIADKC: 'Kode kecamatan',
+  WADMKK: 'Kabupaten/kota', WIADKK: 'Kode kabupaten/kota',
+  WADMPR: 'Provinsi', WIADPR: 'Kode provinsi',
+  PROVINSI: 'Provinsi', KAB_KOTA: 'Kabupaten/kota', KECAMATAN: 'Kecamatan', DESA_KELUR: 'Desa/kelurahan',
+  KODE_DESA: 'Kode desa', JUMLAH_PEN: 'Jumlah penduduk', JUMLAH_KK: 'Jumlah kepala keluarga',
+  LUAS_WILAY: 'Luas wilayah', LUAS_DESA: 'Luas desa', KEPADATAN: 'Kepadatan', GENERATED: 'Tanggal sumber',
+  'LABEL-COLOR': 'Warna label', 'LABEL-OPACITY': 'Opasitas label', 'LABEL-SCALE': 'Skala label', ICON: 'Ikon sumber',
+}
+
+export function formatKmlAttributeLabel(key: string) {
+  const friendly = kmlAttributeLabels[key.toUpperCase()]
+  if (friendly) return `${friendly} (${key})`
+  const spaced = key.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim()
+  return /^[A-Z0-9_]+$/.test(key) ? `${spaced[0]?.toLocaleUpperCase('id-ID') ?? ''}${spaced.slice(1).toLocaleLowerCase('id-ID')} (${key})` : spaced
+}
+
+function isEmptyKmlAttribute(key: string, value: unknown) {
+  if (value === null || value === undefined || value === '') return true
+  if (typeof value !== 'string') return false
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && Object.keys(parsed).length === 1 && (parsed as Record<string, unknown>)['@_name'] === key)
+  } catch {
+    return false
+  }
+}
+
+function appendDetailList(parent: HTMLElement, rows: Array<[string, unknown]>) {
+  const details = document.createElement('dl')
+  details.className = 'network-map-popup-details'
+  for (const [key, value] of rows) {
+    const term = document.createElement('dt')
+    term.textContent = key
+    const description = document.createElement('dd')
+    description.textContent = value === null || value === undefined || value === '' ? '—' : String(value)
+    details.append(term, description)
+  }
+  parent.append(details)
 }
 
 function addPinIcon(map: MapLibreMap, name: string, color: string) {
@@ -113,10 +161,11 @@ function getFeatureBounds(features: NetworkMapFeature[], LngLatBoundsClass: type
   return bounds
 }
 
-export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature, style, onViewportChange, onSegmentSelect }: NetworkMapCanvasProps) {
+export function NetworkMapCanvas({ features, visibleLayers, style, onViewportChange, onSegmentSelect }: NetworkMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const sourceRef = useRef<GeoJSONSource | null>(null)
+  const pointSourceRef = useRef<GeoJSONSource | null>(null)
   const boundsConstructorRef = useRef<typeof LngLatBounds | null>(null)
   const previousFeaturesRef = useRef<NetworkMapFeature[] | null>(null)
   const hasAutoFitRef = useRef(false)
@@ -185,6 +234,14 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           type: 'geojson',
           data: { type: 'FeatureCollection', features: [] },
         })
+        loadedMap.addSource('network-point-features', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features: [] },
+          cluster: true,
+          clusterRadius: 48,
+          clusterMaxZoom: NETWORK_POINT_MIN_ZOOM - 1,
+          clusterMinPoints: 2,
+        })
         const polygons: FillLayerSpecification = {
           id: 'network-polygons',
           type: 'fill',
@@ -201,6 +258,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           id: 'network-lines',
           type: 'line',
           source: 'network-features',
+          minzoom: NETWORK_LINE_MIN_ZOOM,
           filter: ['match', ['geometry-type'], ['LineString', 'MultiLineString'], true, false],
           layout: {
             'line-join': 'round',
@@ -247,15 +305,43 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
         addPinIcon(loadedMap, 'atlas-pin-pole', '#fd7e14')
         addPinIcon(loadedMap, 'atlas-pin-odc', '#6f42c1')
         addPinIcon(loadedMap, 'atlas-pin-odp', '#198754')
+        addPinIcon(loadedMap, 'atlas-pin-pop', '#dc3545')
         addPinIcon(loadedMap, 'atlas-pin-analysis', '#dc3545')
         addPinIcon(loadedMap, 'atlas-pin-reference', '#d63384')
+        loadedMap.addLayer({
+          id: 'network-point-clusters',
+          type: 'circle',
+          source: 'network-point-features',
+          filter: ['has', 'point_count'],
+          paint: {
+            'circle-color': ['step', ['get', 'point_count'], '#0d6efd', 10, '#6f42c1', 100, '#fd7e14', 1000, '#dc3545'],
+            'circle-radius': ['interpolate', ['exponential', 0.5], ['get', 'point_count'], 2, 12, 10, 18, 100, 29, 1000, 44],
+            'circle-opacity': 0.92,
+            'circle-stroke-color': '#ffffff',
+            'circle-stroke-width': 2,
+          },
+        })
+        loadedMap.addLayer({
+          id: 'network-point-cluster-count',
+          type: 'symbol',
+          source: 'network-point-features',
+          filter: ['has', 'point_count'],
+          layout: {
+            'text-field': ['get', 'point_count_abbreviated'],
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 12,
+            'text-allow-overlap': true,
+          },
+          paint: { 'text-color': '#ffffff' },
+        })
         const points: SymbolLayerSpecification = {
           id: 'network-points',
           type: 'symbol',
-          source: 'network-features',
-          filter: ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false],
+          source: 'network-point-features',
+          minzoom: NETWORK_POINT_MIN_ZOOM,
+          filter: ['all', ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false], ['!', ['has', 'point_count']]],
           layout: {
-            'icon-image': ['match', ['get', 'layer'], 'poles', 'atlas-pin-pole', 'odc', 'atlas-pin-odc', 'odp', 'atlas-pin-odp', 'references', 'atlas-pin-reference', 'analysis', 'atlas-pin-analysis', 'atlas-pin-analysis'],
+            'icon-image': ['match', ['get', 'layer'], 'poles', 'atlas-pin-pole', 'odc', 'atlas-pin-odc', 'odp', 'atlas-pin-odp', 'pops', 'atlas-pin-pop', 'references', 'atlas-pin-reference', 'analysis', 'atlas-pin-analysis', 'atlas-pin-analysis'],
             'icon-anchor': 'bottom',
             'icon-size': 0.9,
             'icon-allow-overlap': true,
@@ -266,6 +352,8 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
 
         const source = loadedMap.getSource('network-features')
         if (source?.type === 'geojson') sourceRef.current = source as GeoJSONSource
+        const pointSource = loadedMap.getSource('network-point-features')
+        if (pointSource?.type === 'geojson') pointSourceRef.current = pointSource as GeoJSONSource
         boundsConstructorRef.current = maplibre.LngLatBounds
 
         let activePopup: InstanceType<typeof maplibre.Popup> | null = null
@@ -284,6 +372,18 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           highlightedAreaId = id
           if (id !== null) loadedMap.setFeatureState({ source: 'network-features', id }, { active: true })
         }
+        loadedMap.on('mouseenter', 'network-point-clusters', () => { loadedMap.getCanvas().style.cursor = 'pointer' })
+        loadedMap.on('mouseleave', 'network-point-clusters', () => { loadedMap.getCanvas().style.cursor = '' })
+        loadedMap.on('click', ['network-point-clusters', 'network-point-cluster-count'], (event) => {
+          const feature = event.features?.[0]
+          const clusterId = Number(feature?.properties?.cluster_id)
+          const coordinates = feature?.geometry.type === 'Point' ? feature.geometry.coordinates : null
+          const clusterSource = loadedMap.getSource('network-point-features')
+          if (!coordinates || !Number.isFinite(clusterId) || clusterSource?.type !== 'geojson') return
+          void (clusterSource as GeoJSONSource).getClusterExpansionZoom(clusterId).then((zoom) => {
+            loadedMap.easeTo({ center: [coordinates[0], coordinates[1]], zoom, duration: 350 })
+          }).catch(() => undefined)
+        })
         loadedMap.on('mousemove', 'network-polygons', (event) => {
           const feature = event.features?.find((candidate) => candidate.properties?.layer === 'areas')
           const id = feature?.id
@@ -325,6 +425,10 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
           loadedMap.getCanvas().style.cursor = ''
         })
         loadedMap.on('click', ['network-polygons', 'network-lines', 'network-points', 'area-boundaries', 'area-boundary-casing'], (event) => {
+          const clusterUnderPointer = loadedMap.queryRenderedFeatures(event.point, {
+            layers: ['network-point-clusters', 'network-point-cluster-count'],
+          }).some((candidate) => Number(candidate.properties?.point_count) > 0)
+          if (clusterUnderPointer) return
           const feature = event.features?.[0]
           if (!feature) return
           lineHoverPopup.remove()
@@ -379,32 +483,58 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
             detail.textContent = layerLabel(properties.layer)
             popupContent.append(detail)
           }
-          const attributes = properties?.attributes && typeof properties.attributes === 'object'
-            ? Object.entries(properties.attributes as Record<string, unknown>)
-            : []
-          if (!attributes.some(([key]) => key.toLowerCase() === 'name')) attributes.unshift(['name', properties?.name ?? ''])
+          const rawAttributes = properties?.attributes && typeof properties.attributes === 'object'
+            ? properties.attributes as Record<string, unknown>
+            : {}
+          const kmlFolderPath = properties?.kmlFolderPath ?? rawAttributes.kmlFolderPath
+          const kmlCandidate = properties?.layer === 'references'
+            ? classifyKmlCandidate({
+                name: String(properties.name ?? ''),
+                geometryType: feature.geometry.type,
+                folderPath: typeof kmlFolderPath === 'string' ? kmlFolderPath : undefined,
+                attributes: rawAttributes,
+              })
+            : null
+          const sourceAttributes = Object.entries(rawAttributes)
+            .filter(([key, value]) => !['name', 'kmlfolderpath'].includes(key.toLowerCase()) && !isEmptyKmlAttribute(key, value))
           const geometry = feature.geometry
+          const summaryRows: Array<[string, unknown]> = []
+          if (kmlCandidate) summaryRows.push(['Kandidat tipe dari KML', `${kmlCandidate.label} · ${kmlCandidate.evidence}`])
+          if (typeof kmlFolderPath === 'string' && kmlFolderPath) summaryRows.push(['Folder KML', kmlFolderPath])
+          if (typeof properties?.segmentCode === 'string') summaryRows.push(['Kode segmen', properties.segmentCode])
+          if (typeof properties?.status === 'string') summaryRows.push(['Status', properties.status === 'ACTIVE' ? 'Aktif' : properties.status === 'INACTIVE' ? 'Nonaktif' : properties.status])
+          if (typeof properties?.capacityValidated === 'boolean') summaryRows.push(['Kapasitas tervalidasi', properties.capacityValidated ? 'Ya' : 'Belum'])
+          if (typeof properties?.heightM === 'number') summaryRows.push(['Tinggi tiang', `${properties.heightM} m`])
+          if (typeof properties?.areaCode === 'string') summaryRows.push(['Kode area', properties.areaCode])
           if ((properties?.layer === 'references' || properties?.layer === 'segments') && (geometry.type === 'LineString' || geometry.type === 'MultiLineString') && Number.isFinite(Number(properties.sourceLengthM))) {
-            const measureName = properties.layer === 'references' ? 'panjang geometri KML' : 'panjang geometri segmen'
-            attributes.push([measureName, distanceLabel(Number(properties.sourceLengthM))])
+            const measureName = properties.layer === 'references' ? 'Panjang geometri KML' : 'Panjang geometri segmen'
+            summaryRows.push([measureName, distanceLabel(Number(properties.sourceLengthM))])
           }
           const coordinate = geometry.type === 'Point' ? geometry.coordinates
             : geometry.type === 'LineString' ? geometry.coordinates[0]
-              : geometry.type === 'MultiLineString' ? geometry.coordinates[0]?.[0] : undefined
+              : geometry.type === 'MultiLineString' ? geometry.coordinates[0]?.[0]
+                : geometry.type === 'Polygon' ? geometry.coordinates[0]?.[0]
+                  : geometry.type === 'MultiPolygon' ? geometry.coordinates[0]?.[0]?.[0] : undefined
           if (coordinate && Number.isFinite(coordinate[0]) && Number.isFinite(coordinate[1])) {
-            attributes.push(['koordinat', `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`])
+            const coordinateLabel = geometry.type === 'Point' ? 'Koordinat (lintang, bujur)' : 'Koordinat pertama (lintang, bujur)'
+            summaryRows.push([coordinateLabel, `${coordinate[1].toFixed(5)}, ${coordinate[0].toFixed(5)}`])
           }
-          if (attributes.length) {
-            const details = document.createElement('dl')
-            details.className = 'network-map-popup-details'
-            for (const [key, value] of attributes) {
-              const term = document.createElement('dt')
-              term.textContent = key
-              const description = document.createElement('dd')
-              description.textContent = value === null || value === undefined ? '' : String(value)
-              details.append(term, description)
-            }
-            popupContent.append(details)
+          if (summaryRows.length) appendDetailList(popupContent, summaryRows)
+          if (kmlCandidate) {
+            const note = document.createElement('p')
+            note.className = 'network-map-popup-inference'
+            note.setAttribute('role', 'note')
+            note.textContent = 'Kandidat dikenali dari data sumber; belum dikonfirmasi sebagai aset operasional.'
+            popupContent.append(note)
+          }
+          if (sourceAttributes.length) {
+            const sourceDetails = document.createElement('details')
+            sourceDetails.className = 'network-map-popup-source'
+            const summary = document.createElement('summary')
+            summary.textContent = `Atribut sumber KML (${sourceAttributes.length})`
+            sourceDetails.append(summary)
+            appendDetailList(sourceDetails, sourceAttributes.map(([key, value]) => [formatKmlAttributeLabel(key), value]))
+            popupContent.append(sourceDetails)
           }
 
           activePopup?.remove()
@@ -440,6 +570,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
       map?.remove()
       mapRef.current = null
       sourceRef.current = null
+      pointSourceRef.current = null
       boundsConstructorRef.current = null
       previousFeaturesRef.current = null
     }
@@ -490,21 +621,26 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
   useEffect(() => {
     const map = mapRef.current
     const source = sourceRef.current
-    if (!mapReady || !map || !source) return
+    const pointSource = pointSourceRef.current
+    if (!mapReady || !map || !source || !pointSource) return
 
-    const query = search.trim().toLocaleLowerCase()
-    const visibleFeatures = features.filter((feature) => {
-      const { id, name, layer } = feature.properties
-      return visibleLayers[layer] !== false
-        && (!query || name.toLocaleLowerCase().includes(query) || id.toLocaleLowerCase().includes(query))
-    })
-    const focusIsVisible = focusFeature && visibleLayers[focusFeature.properties.layer]
-      && !visibleFeatures.some((feature) => feature.id === focusFeature.id) ? [focusFeature] : []
-    const collection: FeatureCollection<Geometry, NetworkMapProperties> = {
-      type: 'FeatureCollection',
-      features: [...visibleFeatures, ...focusIsVisible],
+    const visibleFeatures = features.filter((feature) => visibleLayers[feature.properties.layer] !== false)
+    const pointFeatures: NetworkMapFeature[] = []
+    const nonPointFeatures: NetworkMapFeature[] = []
+    for (const feature of visibleFeatures) {
+      if (feature.geometry.type === 'Point') pointFeatures.push(feature)
+      else if (feature.geometry.type === 'MultiPoint') {
+        feature.geometry.coordinates.forEach((coordinates, index) => pointFeatures.push({
+          ...feature,
+          id: `${String(feature.id ?? feature.properties.id)}:point-${index}`,
+          geometry: { type: 'Point', coordinates },
+        }))
+      } else nonPointFeatures.push(feature)
     }
+    const collection: FeatureCollection<Geometry, NetworkMapProperties> = { type: 'FeatureCollection', features: nonPointFeatures }
+    const pointCollection: FeatureCollection<Geometry, NetworkMapProperties> = { type: 'FeatureCollection', features: pointFeatures }
     source.setData(collection)
+    pointSource.setData(pointCollection)
 
     const LngLatBoundsClass = boundsConstructorRef.current
     if (previousFeaturesRef.current !== features) {
@@ -517,20 +653,7 @@ export function NetworkMapCanvas({ features, visibleLayers, search, focusFeature
         }
       }
     }
-  }, [features, focusFeature, mapReady, search, visibleLayers])
-
-  useEffect(() => {
-    const map = mapRef.current
-    const Bounds = boundsConstructorRef.current
-    if (!mapReady || !map || !focusFeature || !Bounds) return
-    if (focusFeature.geometry.type === 'Point') {
-      const [longitude, latitude] = focusFeature.geometry.coordinates
-      map.flyTo({ center: [longitude, latitude], zoom: 16, duration: 700 })
-      return
-    }
-    const bounds = getFeatureBounds([focusFeature], Bounds)
-    if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 16, duration: 700 })
-  }, [focusFeature, mapReady])
+  }, [features, mapReady, visibleLayers])
 
   return (
     <>

@@ -20,8 +20,8 @@ export const segmentsQuerySchema = z.object({
 export const mapQuerySchema = z.object({
   ...viewportFields,
   pageSize: z.coerce.number().int().min(1).max(1000).default(1000),
-  layers: z.string().default('segments,poles,odc,odp').transform((value) => [...new Set(value.split(',').map((item) => item.trim()))])
-    .pipe(z.array(z.enum(['segments', 'poles', 'odc', 'odp', 'areas', 'references'])).min(1).max(6)),
+  layers: z.string().default('segments,poles,odc,odp,pops').transform((value) => [...new Set(value.split(',').map((item) => item.trim()))])
+    .pipe(z.array(z.enum(['segments', 'poles', 'odc', 'odp', 'pops', 'areas', 'references'])).min(1).max(7)),
 }).strict()
 
 export const networkSearchQuerySchema = z.object({

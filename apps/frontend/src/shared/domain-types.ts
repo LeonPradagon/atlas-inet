@@ -26,7 +26,7 @@ export interface UploadPreview { id: string; preview: { rowNumber: number; refer
 export interface ImportPreview {
   id: string; rows: { rowNumber: number; kind: string; code: string; cableName?: string; geometry?: Geometry; address?: string; geocoding?: { provider: string; datasetVersion: string | null; confirmedAt: string } }[];
   areas: { rowNumber: number; externalId: string; code: string; name: string; geometry: Geometry }[];
-  referenceFeatures: { rowNumber: number; externalId: string; name: string; geometry: Geometry; assetRowValid: boolean }[];
+  referenceFeatures: { rowNumber: number; externalId: string; name: string; geometry: Geometry; assetRowValid: boolean; properties?: Record<string, string> }[];
   errors: { rowNumber: number; message: string; code?: string; sourceRow?: { kind: string; code: string; address: string }; lookupId?: string; candidates?: { latitude: number; longitude: number; label: string; precision?: string }[] }[];
    status: string; datasetId: string | null; areasPublishedAt?: string | null; autoPublishError?: string | null;
 }
