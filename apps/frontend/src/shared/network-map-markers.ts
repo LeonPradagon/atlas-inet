@@ -1,8 +1,8 @@
 import { classifyKmlCandidate } from './kml-classification'
 
 export const networkMapMarkerStyles = {
-  'pole-5m': { label: 'Tiang · 5 m', color: '#eab308', glyph: '5' },
-  'pole-7m': { label: 'Tiang · 7 m', color: '#c2410c', glyph: '7' },
+  'pole-7m': { label: 'Tiang · 7 m', color: '#eab308', glyph: '7' },
+  'pole-9m': { label: 'Tiang · 9 m', color: '#c2410c', glyph: '9' },
   'pole-unknown': { label: 'Tiang · tinggi tidak tercatat', color: '#9a3412', glyph: 'T' },
   odc: { label: 'ODC', color: '#7c3aed', glyph: 'C' },
   odp: { label: 'ODP', color: '#16a34a', glyph: 'D' },
@@ -20,13 +20,13 @@ export type NetworkMapMarkerKind = keyof typeof networkMapMarkerStyles
 
 type MarkerProperties = Record<string, unknown>
 
-function explicitPoleHeight(properties: MarkerProperties, attributes: MarkerProperties): 5 | 7 | undefined {
+function explicitPoleHeight(properties: MarkerProperties, attributes: MarkerProperties): 7 | 9 | undefined {
   const direct = Number(properties.heightM)
-  if (direct === 5 || direct === 7) return direct
+  if (direct === 7 || direct === 9) return direct
   for (const [key, value] of Object.entries(attributes)) {
     if (!['height', 'heightm', 'poleheight', 'tinggi', 'tinggitiang'].includes(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
-    const match = /^(5|7)(?:\s*m)?$/i.exec(String(value).trim())
-    if (match) return Number(match[1]) as 5 | 7
+    const match = /^(7|9)(?:\s*m)?$/i.exec(String(value).trim())
+    if (match) return Number(match[1]) as 7 | 9
   }
   return undefined
 }
@@ -76,8 +76,8 @@ export function networkMapMarkerImage(properties: MarkerProperties, geometryType
 export const networkMapMarkerLegend = [
   { kind: 'segments', label: 'Segmen kabel', color: '#0d6efd', glyph: '—', candidate: false },
   { kind: 'areas', label: 'Area referensi', color: '#ffd400', glyph: 'A', candidate: false },
-  { kind: 'pole-5m', label: networkMapMarkerStyles['pole-5m'].label, color: networkMapMarkerStyles['pole-5m'].color, glyph: networkMapMarkerStyles['pole-5m'].glyph },
   { kind: 'pole-7m', label: networkMapMarkerStyles['pole-7m'].label, color: networkMapMarkerStyles['pole-7m'].color, glyph: networkMapMarkerStyles['pole-7m'].glyph },
+  { kind: 'pole-9m', label: networkMapMarkerStyles['pole-9m'].label, color: networkMapMarkerStyles['pole-9m'].color, glyph: networkMapMarkerStyles['pole-9m'].glyph },
   { kind: 'pole-candidate', label: 'Kandidat tiang dari KML', color: networkMapMarkerStyles['pole-unknown'].color, glyph: networkMapMarkerStyles['pole-unknown'].glyph, candidate: true },
   { kind: 'odc', label: 'ODC operasional', color: networkMapMarkerStyles.odc.color, glyph: networkMapMarkerStyles.odc.glyph },
   { kind: 'odc-candidate', label: 'Kandidat ODC dari KML', color: networkMapMarkerStyles.odc.color, glyph: networkMapMarkerStyles.odc.glyph, candidate: true },

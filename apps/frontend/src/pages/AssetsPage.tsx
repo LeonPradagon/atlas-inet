@@ -12,7 +12,7 @@ import { classifyKmlCandidate, type KmlCandidateKind } from '../shared/kml-class
 function sourcePoleHeight(properties?: Record<string, string>) {
   for (const [key, value] of Object.entries(properties ?? {})) {
     if (!['height', 'heightm', 'poleheight', 'tinggi', 'tinggitiang'].includes(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
-    const match = /^(5|7)(?:\s*m)?$/i.exec(value.trim())
+    const match = /^(7|9)(?:\s*m)?$/i.exec(value.trim())
     if (match) return match[1]
   }
   return ''
@@ -94,7 +94,7 @@ function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; u
   const [poleHeights, setPoleHeights] = useState<Record<number, string>>({})
   const geocode = useDomainMutation((rowNumber: number) => atlasApi.imports.geocodeRow(preview.id, rowNumber))
   const confirm = useDomainMutation((input: { rowNumber: number; lookupId: string; index: number }) => atlasApi.imports.confirmCoordinates(preview.id, input.rowNumber, input.lookupId, input.index))
-  const confirmClassification = useDomainMutation((input: { rowNumber: number; kind: 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP'; code: string; cableName?: string; heightM?: 5 | 7 }) => atlasApi.imports.confirmClassification(preview.id, input.rowNumber, input))
+  const confirmClassification = useDomainMutation((input: { rowNumber: number; kind: 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP'; code: string; cableName?: string; heightM?: 7 | 9 }) => atlasApi.imports.confirmClassification(preview.id, input.rowNumber, input))
   const publish = useDomainMutation(() => atlasApi.imports.publish(preview.id))
   const disabled = uploading || geocode.isPending || confirm.isPending || confirmClassification.isPending || publish.isPending || preview.status !== 'PREVIEW'
   const unmappedFeatures = preview.referenceFeatures.filter((feature) => !feature.assetRowValid).length
@@ -124,8 +124,8 @@ function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; u
               <option value="">Pilih tipe…</option>{isLine ? <option value="SEGMENT">Segmen kabel</option> : <><option value="NODE">Node jaringan</option><option value="POLE">Tiang</option><option value="ODC">ODC</option><option value="ODP">ODP</option><option value="POP">POP</option></>}
             </select></td>
             <td><input className="form-control form-control-sm" aria-label={`Kode aset baris ${feature.rowNumber}`} maxLength={200} value={code} disabled={disabled} onChange={(event) => setAssetCodes((current) => ({ ...current, [feature.rowNumber]: event.target.value }))} /></td>
-            <td>{kind === 'POLE' ? <select className="form-select form-select-sm" aria-label={`Tinggi tiang baris ${feature.rowNumber}`} value={height} disabled={disabled} onChange={(event) => setPoleHeights((current) => ({ ...current, [feature.rowNumber]: event.target.value }))}><option value="">Pilih tinggi…</option><option value="5">5 m</option><option value="7">7 m</option></select> : kind === 'SEGMENT' ? <span className="small">Nama kabel: {feature.name}; kapasitas/topologi kosong sampai diisi.</span> : <span className="small">Lokasi dari KML; relasi segmen belum diisi.</span>}</td>
-            <td><button className="btn btn-outline-primary btn-sm text-nowrap" type="button" disabled={disabled || !kind || !code.trim() || (kind === 'POLE' && !height)} onClick={() => confirmClassification.mutate({ rowNumber: feature.rowNumber, kind: kind as 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP', code, ...(kind === 'SEGMENT' ? { cableName: feature.name } : {}), ...(kind === 'POLE' && height ? { heightM: Number(height) as 5 | 7 } : {}) }, { onSuccess: (response) => { setPreview(response.data); setClassificationPage(1) } })}>Konfirmasi tipe</button></td>
+            <td>{kind === 'POLE' ? <select className="form-select form-select-sm" aria-label={`Tinggi tiang baris ${feature.rowNumber}`} value={height} disabled={disabled} onChange={(event) => setPoleHeights((current) => ({ ...current, [feature.rowNumber]: event.target.value }))}><option value="">Pilih tinggi…</option><option value="7">7 m</option><option value="9">9 m</option></select> : kind === 'SEGMENT' ? <span className="small">Nama kabel: {feature.name}; kapasitas/topologi kosong sampai diisi.</span> : <span className="small">Lokasi dari KML; relasi segmen belum diisi.</span>}</td>
+            <td><button className="btn btn-outline-primary btn-sm text-nowrap" type="button" disabled={disabled || !kind || !code.trim() || (kind === 'POLE' && !height)} onClick={() => confirmClassification.mutate({ rowNumber: feature.rowNumber, kind: kind as 'SEGMENT' | 'NODE' | 'POLE' | 'ODC' | 'ODP' | 'POP', code, ...(kind === 'SEGMENT' ? { cableName: feature.name } : {}), ...(kind === 'POLE' && height ? { heightM: Number(height) as 7 | 9 } : {}) }, { onSuccess: (response) => { setPreview(response.data); setClassificationPage(1) } })}>Konfirmasi tipe</button></td>
           </tr>
         })}
       </tbody></table></div>

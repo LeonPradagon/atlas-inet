@@ -60,7 +60,7 @@ export function SegmentDetail({ id, editable = false, mapContext = false }: { id
     {mapContext ? <section aria-label="Aset tiang">
       <label className="form-label" htmlFor={`map-pole-height-${id}`}>Filter tinggi tiang</label>
       <select id={`map-pole-height-${id}`} className="form-select form-select-sm mb-2" value={poleHeightFilter} onChange={(event) => setPoleHeightFilter(event.target.value)}>
-        <option value="all">Semua tinggi</option><option value="5">5 meter</option><option value="7">7 meter</option>
+        <option value="all">Semua tinggi</option><option value="7">7 meter</option><option value="9">9 meter</option>
       </select>
       <p>Tiang ({query.data.data.assets?.poles.filter((pole) => poleHeightFilter === 'all' || String(pole.heightM) === poleHeightFilter).length ?? 0}): {query.data.data.assets?.poles.filter((pole) => poleHeightFilter === 'all' || String(pole.heightM) === poleHeightFilter).map((pole) => `${pole.code} (${pole.heightM} meter)`).join(', ') || 'Tidak tercatat untuk filter ini'}</p>
       <p>ODC: {query.data.data.assets?.odcs.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>

@@ -332,7 +332,7 @@ describe('operational API interactions', () => {
       cableType: { id: 'type-id', code: 'FO', name: 'Fiber Optic' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] },
       capacity: { total: null, used: 3, booked: 4, idle: null, available: null, waitingCount: 2, waitingCores: 5, asOf: '2026-10-06T00:00:00Z', expiryPendingCount: 0 },
       completeness: { status: 'INCOMPLETE', missingFields: ['validatedCapacity'] },
-      assets: { poles: [{ id: 'pole-5', code: 'P5', heightM: 5 }, { id: 'pole-7', code: 'P7', heightM: 7 }], odcs: [{ id: 'odc', code: 'ODC-1' }], odps: [{ id: 'odp', code: 'ODP-1' }] },
+      assets: { poles: [{ id: 'pole-7', code: 'P7', heightM: 7 }, { id: 'pole-9', code: 'P9', heightM: 9 }], odcs: [{ id: 'odc', code: 'ODC-1' }], odps: [{ id: 'odp', code: 'ODP-1' }] },
     } } as never)
     mount(<SegmentDetail id={segment} mapContext />, ['network.read'])
     expect(await screen.findByText('Detail aset jaringan pada peta')).toBeTruthy()
@@ -340,12 +340,12 @@ describe('operational API interactions', () => {
     expect(screen.getByText('24')).toBeTruthy()
     expect(screen.getByText('Core dipesan (Booked)')).toBeTruthy()
     expect(screen.getByText('Waiting List · permintaan')).toBeTruthy()
-    expect(screen.getByText('Tiang (2): P5 (5 meter), P7 (7 meter)')).toBeTruthy()
-    await userEvent.selectOptions(screen.getByLabelText('Filter tinggi tiang'), '5')
-    expect(screen.getByText('Tiang (1): P5 (5 meter)')).toBeTruthy()
+    expect(screen.getByText('Tiang (2): P7 (7 meter), P9 (9 meter)')).toBeTruthy()
     await userEvent.selectOptions(screen.getByLabelText('Filter tinggi tiang'), '7')
     expect(screen.getByText('Tiang (1): P7 (7 meter)')).toBeTruthy()
-    expect(screen.queryByText('P5 (5 meter)')).toBeNull()
+    await userEvent.selectOptions(screen.getByLabelText('Filter tinggi tiang'), '9')
+    expect(screen.getByText('Tiang (1): P9 (9 meter)')).toBeTruthy()
+    expect(screen.queryByText('P7 (7 meter)')).toBeNull()
   })
   it('omits network search while retaining map style and layer filters', () => {
     const search = vi.spyOn(atlasApi.network, 'search')

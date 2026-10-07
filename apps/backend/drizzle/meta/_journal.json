@@ -92,6 +92,13 @@
       "when": 1791480000000,
       "tag": "0012_pole_heights_5_and_7",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791560000000,
+      "tag": "0013_pole_heights_7_and_9",
+      "breakpoints": true
     }
   ]
 }

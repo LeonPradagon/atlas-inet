@@ -73,7 +73,7 @@ export const poles = pgTable('poles', {
   heightM: integer('height_m').notNull(),
 }, (table) => [
   ...pointConstraints('poles', table),
-  check('poles_height_valid', sql`${table.heightM} IN (5, 7)`),
+  check('poles_height_valid', sql`${table.heightM} IN (7, 9)`),
 ])
 export const odcs = pgTable('odcs', pointColumns(), (table) => pointConstraints('odcs', table))
 // ODP labels such as A01 are local to their FDT/line and commonly repeat in source KML.

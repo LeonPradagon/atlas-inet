@@ -574,7 +574,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       assert.ok(otherEntity.every((row) => row.action !== 'BOOKING_CREATED'))
     })
     let pointSegment,uniquePointSegment,connectionPoint,uniqueConnectionPoint
-    await t.test('asset KML publishes topology, cable master, poles 5/7 m and distinct ODC/ODP links',async () => {
+    await t.test('asset KML publishes topology, cable master, poles 7/9 m and distinct ODC/ODP links',async () => {
       const type=await data(await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Synthetic fixture type' }),201)
       assert.equal((await request('network/cable-types','POST',{ entityId:alpha.entityId,code:'TEST-FO',name:'Different name' })).status,409)
       const placemark=(id,name,geometry) => `<Placemark id="${id}"><name>${name}</name>${geometry}</Placemark>`
@@ -585,7 +585,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       const mappings={
         '1':{ kind:'NODE',code:'START' },'2':{ kind:'NODE',code:'END' },
         '3':{ kind:'SEGMENT',code:'ASSET-LINE',cableTypeCode:'TEST-FO',installedCoreCount:12,capacityValidated:true,installationMethod:'AERIAL',roadSide:'LEFT',startNodeCode:'START',endNodeCode:'END' },
-        '4':{ kind:'POLE',heightM:5,segmentCodes:['ASSET-LINE'] },'5':{ kind:'POLE',heightM:7,segmentCodes:['ASSET-LINE'] },
+        '4':{ kind:'POLE',heightM:7,segmentCodes:['ASSET-LINE'] },'5':{ kind:'POLE',heightM:9,segmentCodes:['ASSET-LINE'] },
          '6':{ kind:'ODC',segmentCodes:['ASSET-LINE'] },'7':{ kind:'ODP',segmentCodes:['ASSET-LINE'] },
          '8':{ kind:'SEGMENT',code:'UNIQUE-LINE',cableTypeCode:'TEST-FO' },'9':{ kind:'ODP',segmentCodes:['UNIQUE-LINE'] },
       }
@@ -597,7 +597,7 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
        uniqueConnectionPoint=(await pool.query("SELECT id FROM odps WHERE external_id='unique-odp'")).rows[0].id
       const detail=await data(await request(`network/segments/${pointSegment}`))
       assert.equal(detail.cableType.id,type.id)
-      assert.deepEqual(detail.assets.poles.map((p) => p.heightM),[5,7])
+      assert.deepEqual(detail.assets.poles.map((p) => p.heightM),[7,9])
       assert.equal(detail.assets.odcs.length,1);assert.equal(detail.assets.odps.length,1)
       assert.equal(detail.capacity.available,12)
       connectionPoint=detail.assets.odps[0].id

@@ -92,8 +92,25 @@ function hoverTypeLabel(feature: { geometry: Geometry; properties?: Record<strin
       ? `Kandidat: ${candidate.label} · sumber ${candidate.evidence} (belum dikonfirmasi)`
       : 'Placemark KML · tipe belum dikenali'
   }
-  if (layer === 'poles' && (properties.heightM === 5 || properties.heightM === 7)) return `Tiang ${properties.heightM} m`
+  if (layer === 'poles' && (properties.heightM === 7 || properties.heightM === 9)) return `Tiang ${properties.heightM} m`
   return layer ? layerLabel(layer) : 'Tipe belum diketahui'
+}
+
+function lineLengthLabel(feature: { geometry: Geometry; properties?: Record<string, unknown> }) {
+  const properties = feature.properties ?? {}
+  if (properties.layer === 'segments') return 'Panjang kabel'
+  if (properties.layer !== 'references') return 'Panjang geometri'
+  const attributes = properties.attributes && typeof properties.attributes === 'object'
+    ? properties.attributes as Record<string, unknown>
+    : {}
+  const folderPath = properties.kmlFolderPath ?? attributes.kmlFolderPath
+  const candidate = classifyKmlCandidate({
+    name: String(properties.name ?? ''),
+    geometryType: feature.geometry.type,
+    folderPath: typeof folderPath === 'string' ? folderPath : undefined,
+    attributes,
+  })
+  return candidate?.kind === 'cable' ? 'Panjang kabel' : 'Panjang geometri KML'
 }
 
 const kmlAttributeLabels: Record<string, string> = {
@@ -182,7 +199,7 @@ function addPinIcon(map: MapLibreMap, name: string, color: string, glyph: string
   map.addImage(name, context.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: 2 })
 }
 
-function addPoleIcon(map: MapLibreMap, name: string, color: string, heightM?: 5 | 7, isCandidate = false) {
+function addPoleIcon(map: MapLibreMap, name: string, color: string, heightM?: 7 | 9, isCandidate = false) {
   if (map.hasImage(name)) return
   const canvas = document.createElement('canvas')
   canvas.width = 48
@@ -190,7 +207,7 @@ function addPoleIcon(map: MapLibreMap, name: string, color: string, heightM?: 5 
   const context = canvas.getContext('2d')
   if (!context) return
 
-  const top = heightM === 7 ? 5 : heightM === 5 ? 18 : 12
+  const top = heightM === 9 ? 5 : heightM === 7 ? 18 : 12
   const stroke = (lineWidth: number, strokeStyle: string) => {
     context.lineWidth = lineWidth
     context.strokeStyle = strokeStyle
@@ -391,7 +408,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
         for (const [kind, marker] of Object.entries(networkMapMarkerStyles)) {
           const isPole = kind.startsWith('pole-')
           const icon = isPole ? `atlas-pole-${kind.slice(5)}` : `atlas-pin-${kind}`
-          const poleHeight = kind === 'pole-5m' ? 5 : kind === 'pole-7m' ? 7 : undefined
+          const poleHeight = kind === 'pole-7m' ? 7 : kind === 'pole-9m' ? 9 : undefined
           const addIcon = (iconName: string, candidate = false) => isPole
             ? addPoleIcon(loadedMap, iconName, marker.color, poleHeight, candidate)
             : addPinIcon(loadedMap, iconName, marker.color, marker.glyph, candidate)
@@ -531,7 +548,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
               lineHoverName.textContent = isReference ? 'Geometri KML' : String(lineProperties.name ?? 'Segmen kabel')
               lineHoverType.textContent = hoverTypeLabel({ geometry: feature.geometry, properties: lineProperties })
               lineHoverSourceName.textContent = isReference ? `Nama Placemark sumber: ${String(lineProperties.name ?? '—')}` : ''
-              const measureName = isReference ? 'Panjang geometri KML' : lineProperties.layer === 'segments' ? 'Panjang geometri segmen' : 'Panjang geometri'
+              const measureName = lineLengthLabel({ geometry: feature.geometry, properties: lineProperties })
               const sourceLength = lineProperties.sourceLengthM
               lineHoverLength.textContent = `${measureName}: ${typeof sourceLength === 'number' && Number.isFinite(sourceLength) ? distanceLabel(sourceLength) : 'belum tersedia'}`
             }
@@ -638,7 +655,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           if (typeof properties?.heightM === 'number') summaryRows.push(['Tinggi tiang', `${properties.heightM} m`])
           if (typeof properties?.areaCode === 'string') summaryRows.push(['Kode area', properties.areaCode])
           if ((properties?.layer === 'references' || properties?.layer === 'segments') && (geometry.type === 'LineString' || geometry.type === 'MultiLineString') && Number.isFinite(Number(properties.sourceLengthM))) {
-            const measureName = properties.layer === 'references' ? 'Panjang geometri KML' : 'Panjang geometri segmen'
+            const measureName = lineLengthLabel({ geometry: feature.geometry, properties })
             summaryRows.push([measureName, distanceLabel(Number(properties.sourceLengthM))])
           }
           const coordinate = geometry.type === 'Point' ? geometry.coordinates

@@ -100,8 +100,8 @@ export function NetworkMapPage() {
               : `${networkFeatures.length} fitur jaringan tersedia.`}
           </p>
           <div className="small text-secondary mt-2">
-            <p className="mb-1"><strong>Petunjuk:</strong> hover pin untuk melihat tipe dan nama sumber; hover garis kabel untuk melihat nama serta panjang geometri. Klik fitur untuk detail, atau klik cluster pin untuk memperbesar.</p>
-            <p className="mb-1">Placemark KML adalah data sumber, belum tentu aset operasional. Garis KML menunjukkan panjang geometri, bukan panjang kabel terpasang.</p>
+            <p className="mb-1"><strong>Petunjuk:</strong> hover pin untuk melihat tipe dan nama sumber; hover garis kabel untuk melihat nama serta panjang kabel. Klik fitur untuk detail, atau klik cluster pin untuk memperbesar.</p>
+            <p className="mb-1">Panjang kabel dihitung dari lintasan koordinat KML, bukan pengukuran fisik kabel terpasang. Placemark KML tetap data sumber dan belum tentu aset operasional.</p>
             <p className="mb-0">Data dimuat per area peta. Geser peta lalu pilih <strong>Muat data area ini</strong> untuk area baru. Basemap perlu koneksi internet.</p>
           </div>
         </ContentCard>

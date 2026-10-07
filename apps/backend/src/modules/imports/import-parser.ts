@@ -37,14 +37,14 @@ const assetFields = z.object({
   geometry: geometrySchema, cableName: z.string().trim().min(1).max(200).optional(), cableTypeCode: z.string().trim().min(1).max(200).optional(),
   installedCoreCount: z.number().int().positive().max(1_000_000).optional(), capacityValidated: z.boolean().optional(),
   installationMethod: z.enum(['BURIAL','AERIAL']).optional(), roadSide: z.enum(['LEFT','RIGHT']).optional(),
-  startNodeCode: z.string().max(200).optional(), endNodeCode: z.string().max(200).optional(), heightM: z.union([z.literal(5),z.literal(7)]).optional(), segmentCodes: z.array(z.string().min(1).max(200)).max(100).optional(),
+  startNodeCode: z.string().max(200).optional(), endNodeCode: z.string().max(200).optional(), heightM: z.union([z.literal(7),z.literal(9)]).optional(), segmentCodes: z.array(z.string().min(1).max(200)).max(100).optional(),
   address: z.string().trim().min(1).max(1000).optional(),
   geocoding: z.object({ provider: z.string(), datasetVersion: z.string().nullable(), confirmedBy: z.string(), confirmedAt: z.string(), label: z.string(), precision: z.string().optional() }).strict().optional(),
 }).strict()
 export const assetClassificationSchema = assetFields.omit({ rowNumber: true, externalId: true, geometry: true, geocoding: true })
 export type AssetClassificationInput = z.infer<typeof assetClassificationSchema>
 export const pointAddressSchema = assetFields.omit({ geometry: true, geocoding: true }).extend({ kind: z.enum(['NODE','POLE','ODC','ODP','POP']), address: z.string().trim().min(1).max(1000) })
-  .refine((row) => row.kind !== 'POLE' || row.heightM !== undefined, 'Pole requires height 5 or 7')
+  .refine((row) => row.kind !== 'POLE' || row.heightM !== undefined, 'Pole requires height 7 or 9')
   .refine((row) => !row.capacityValidated || row.installedCoreCount !== undefined, 'Validated capacity needs installed core')
   .refine((row) => !!row.startNodeCode === !!row.endNodeCode, 'Topology endpoints must be paired')
   .refine((row) => !row.roadSide || !!row.startNodeCode, 'Road side requires topology direction')
@@ -61,7 +61,7 @@ export const assetRowSchema = assetFields.refine((row) => row.kind === 'SEGMENT'
     const lines = row.geometry.type === 'LineString' ? [row.geometry.coordinates] : row.geometry.coordinates
     return lines.some((line) => line.some((p) => p[0] !== line[0][0] || p[1] !== line[0][1]))
   }, 'Segment line must have nonzero length')
-  .refine((row) => row.kind !== 'POLE' || row.heightM !== undefined, 'Pole requires height 5 or 7')
+  .refine((row) => row.kind !== 'POLE' || row.heightM !== undefined, 'Pole requires height 7 or 9')
   .refine((row) => !row.capacityValidated || row.installedCoreCount !== undefined, 'Validated capacity needs installed core')
   .refine((row) => !!row.startNodeCode === !!row.endNodeCode, 'Topology endpoints must be paired')
   .refine((row) => !row.roadSide || !!row.startNodeCode, 'Road side requires topology direction')
@@ -138,11 +138,11 @@ function nameAssetKind(name: string, folderPath: string, geometryType: string): 
 }
 
 export const DUPLICATE_ASSET_GEOMETRY_WARNING = 'DUPLICATE_ASSET_GEOMETRY_SKIPPED'
-function explicitPoleHeight(metadata: Record<string, unknown>): 5 | 7 | undefined {
+function explicitPoleHeight(metadata: Record<string, unknown>): 7 | 9 | undefined {
   for (const [key, value] of Object.entries(metadata)) {
     if (!['height', 'heightm', 'poleheight', 'tinggi', 'tinggitiang'].includes(key.toLowerCase().replace(/[^a-z]/g, ''))) continue
-    const match = /^(5|7)(?:\s*m)?$/i.exec(metadataText(value))
-    if (match) return Number(match[1]) as 5 | 7
+    const match = /^(7|9)(?:\s*m)?$/i.exec(metadataText(value))
+    if (match) return Number(match[1]) as 7 | 9
   }
   return undefined
 }
