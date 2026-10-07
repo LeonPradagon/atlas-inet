@@ -5,6 +5,7 @@ import { domainKey, useEntityScope } from '../shared/EntityScope'
 import { SegmentDetail } from '../components/SegmentTools'
 import { ContentCard } from '../components/ContentCard'
 import { NetworkMapCanvas, type NetworkMapFeature, type NetworkMapLayer, type NetworkMapStyle } from '../components/NetworkMapCanvas'
+import { networkMapMarkerLegend } from '../shared/network-map-markers'
 
 
 const layerLabels: Record<NetworkMapLayer, string> = {
@@ -124,6 +125,21 @@ export function NetworkMapPage() {
               </div>
             ))}
           </fieldset>
+          <details className="network-map-marker-legend mt-3">
+            <summary>Legenda warna &amp; ikon</summary>
+            <div className="network-map-marker-legend-grid mt-2">
+              {networkMapMarkerLegend.map((item) => (
+                <div className="network-map-marker-legend-item" key={item.kind}>
+                  <span className={`network-map-marker-swatch${item.kind.startsWith('pole-') ? ' network-map-marker-swatch-pole' : ''}`} style={{ backgroundColor: item.color, color: item.color }} aria-hidden="true">
+                    <span>{item.glyph}</span>
+                    {'candidate' in item && item.candidate && <span className="network-map-marker-candidate-badge">?</span>}
+                  </span>
+                  <span>{item.label}</span>
+                </div>
+              ))}
+            </div>
+            <p className="small text-secondary mt-2 mb-0">Tanda ? berarti kandidat dikenali dari KML, belum dikonfirmasi sebagai aset operasional. Tinggi tiang tampil jika tersedia di sumber.</p>
+          </details>
         </ContentCard>
         {selected && <SegmentDetail id={selected} mapContext />}
       </div>

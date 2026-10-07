@@ -151,6 +151,111 @@ body {
   box-shadow: 0 1px 4px #0004;
 }
 
+.network-map-marker-legend > summary {
+  color: #344054;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.network-map-marker-legend-grid {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.network-map-marker-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: #344054;
+  font-size: 0.82rem;
+}
+
+.network-map-marker-swatch {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 1.6rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50% 50% 50% 0;
+  box-shadow: 0 0 0 1px #667085, 0 1px 3px #0003;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  transform: rotate(-45deg);
+}
+
+.network-map-marker-swatch > span:first-child {
+  transform: rotate(45deg);
+  color: #fff;
+}
+
+.network-map-marker-swatch-pole {
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none;
+  transform: none;
+}
+
+.network-map-marker-swatch-pole::before,
+.network-map-marker-swatch-pole::after {
+  position: absolute;
+  content: '';
+  background: currentColor;
+  box-shadow: 0 0 0 1px #fff;
+}
+
+.network-map-marker-swatch-pole::before {
+  top: 0.08rem;
+  bottom: 0.12rem;
+  left: calc(50% - 1.5px);
+  width: 3px;
+}
+
+.network-map-marker-swatch-pole::after {
+  top: 0.45rem;
+  left: 0.18rem;
+  width: 1.25rem;
+  height: 3px;
+}
+
+.network-map-marker-swatch-pole > span:first-child {
+  position: absolute;
+  right: -0.25rem;
+  bottom: -0.25rem;
+  display: grid;
+  width: 0.8rem;
+  height: 0.8rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: #fff;
+  color: #344054;
+  font-size: 0.55rem;
+  line-height: 1;
+  transform: none;
+}
+
+.network-map-marker-candidate-badge {
+  position: absolute;
+  top: -0.32rem;
+  right: -0.38rem;
+  display: grid;
+  width: 0.85rem;
+  height: 0.85rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: #fff;
+  color: #344054;
+  font-size: 0.6rem;
+  line-height: 1;
+  transform: rotate(45deg);
+}
+
 .maplibregl-popup-content .network-map-popup-title {
   display: block;
   flex: 1;

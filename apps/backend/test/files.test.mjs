@@ -65,6 +65,18 @@ test('specific Placemark and deepest folder type override broad parent POP folde
   ])
   assert.deepEqual(result.errors,[])
 })
+test('KML pole assets preserve explicitly recorded 5 m and 7 m heights',async () => {
+  const xml=`<kml><Document><Folder><name>POLE</name>
+    <Placemark id="pole-five"><name>Tiang-5</name><ExtendedData><Data name="height"><value>5 m</value></Data></ExtendedData><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark>
+    <Placemark id="pole-seven"><name>Tiang-7</name><ExtendedData><Data name="height"><value>7</value></Data></ExtendedData><Point><coordinates>106.61,-6.61</coordinates></Point></Placemark>
+  </Folder></Document></kml>`
+  const result=await parseAssetFile(file('pole-heights.kml',Buffer.from(xml)))
+  assert.deepEqual(result.rows.map(({kind,heightM})=>({kind,heightM})),[
+    {kind:'POLE',heightM:5},
+    {kind:'POLE',heightM:7},
+  ])
+  assert.deepEqual(result.errors,[])
+})
 test('duplicate ODP code at different coordinates stays as two source assets',async () => {
   const xml=`<kml><Document>
     <Placemark id="odp-first"><name>ODP Site A</name><ExtendedData><Data name="code"><value>A01</value></Data></ExtendedData><Point><coordinates>106.6,-6.6</coordinates></Point></Placemark>

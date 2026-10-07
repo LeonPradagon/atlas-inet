@@ -12,6 +12,7 @@ import type {
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import { classifyKmlCandidate } from '../shared/kml-classification'
 import { prioritizeMapFeature } from '../shared/network-map-hover'
+import { networkMapMarkerImage, networkMapMarkerStyles } from '../shared/network-map-markers'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
 export type NetworkMapLayer = 'segments' | 'poles' | 'odc' | 'odp' | 'pops' | 'areas' | 'references'
@@ -41,7 +42,7 @@ const featureColor: ExpressionSpecification = [
   'match',
   ['get', 'layer'],
   'segments', '#0d6efd',
-  'poles', '#fd7e14',
+  'poles', '#c2410c',
   'odc', '#6f42c1',
   'odp', '#198754',
   'pops', '#dc3545',
@@ -91,6 +92,7 @@ function hoverTypeLabel(feature: { geometry: Geometry; properties?: Record<strin
       ? `Kandidat: ${candidate.label} · sumber ${candidate.evidence} (belum dikonfirmasi)`
       : 'Placemark KML · tipe belum dikenali'
   }
+  if (layer === 'poles' && (properties.heightM === 5 || properties.heightM === 7)) return `Tiang ${properties.heightM} m`
   return layer ? layerLabel(layer) : 'Tipe belum diketahui'
 }
 
@@ -138,28 +140,87 @@ function appendDetailList(parent: HTMLElement, rows: Array<[string, unknown]>) {
   parent.append(details)
 }
 
-function addPinIcon(map: MapLibreMap, name: string, color: string) {
+function addPinIcon(map: MapLibreMap, name: string, color: string, glyph: string, isCandidate = false) {
   if (map.hasImage(name)) return
   const canvas = document.createElement('canvas')
-  canvas.width = 32
-  canvas.height = 44
+  canvas.width = 48
+  canvas.height = 64
   const context = canvas.getContext('2d')
   if (!context) return
   context.beginPath()
-  context.moveTo(16, 42)
-  context.bezierCurveTo(13, 37, 3, 25, 3, 15)
-  context.arc(16, 15, 13, Math.PI, 0)
-  context.bezierCurveTo(29, 25, 19, 37, 16, 42)
+  context.moveTo(24, 62)
+  context.bezierCurveTo(20, 55, 4, 38, 4, 22)
+  context.arc(24, 22, 20, Math.PI, 0)
+  context.bezierCurveTo(44, 38, 28, 55, 24, 62)
   context.closePath()
   context.fillStyle = color
   context.fill()
-  context.lineWidth = 2
+  context.lineWidth = 3
   context.strokeStyle = '#ffffff'
   context.stroke()
   context.beginPath()
-  context.arc(16, 14, 4, 0, Math.PI * 2)
+  context.arc(24, 22, 13, 0, Math.PI * 2)
   context.fillStyle = '#ffffff'
   context.fill()
+  context.fillStyle = color
+  context.font = `bold ${glyph.length > 1 ? 11 : 18}px Arial, sans-serif`
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.fillText(glyph, 24, 23)
+  if (isCandidate) {
+    context.beginPath()
+    context.arc(39, 10, 8, 0, Math.PI * 2)
+    context.fillStyle = '#ffffff'
+    context.fill()
+    context.strokeStyle = color
+    context.lineWidth = 2
+    context.stroke()
+    context.fillStyle = color
+    context.font = 'bold 12px Arial, sans-serif'
+    context.fillText('?', 39, 10)
+  }
+  map.addImage(name, context.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: 2 })
+}
+
+function addPoleIcon(map: MapLibreMap, name: string, color: string, heightM?: 5 | 7, isCandidate = false) {
+  if (map.hasImage(name)) return
+  const canvas = document.createElement('canvas')
+  canvas.width = 48
+  canvas.height = 64
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  const top = heightM === 7 ? 5 : heightM === 5 ? 18 : 12
+  const stroke = (lineWidth: number, strokeStyle: string) => {
+    context.lineWidth = lineWidth
+    context.strokeStyle = strokeStyle
+    context.lineCap = 'round'
+    context.beginPath()
+    context.moveTo(24, top)
+    context.lineTo(24, 54)
+    context.moveTo(11, top + 4)
+    context.lineTo(37, top + 4)
+    context.moveTo(16, 55)
+    context.lineTo(32, 55)
+    context.stroke()
+  }
+  stroke(9, '#ffffff')
+  stroke(5, color)
+
+  if (isCandidate) {
+    context.beginPath()
+    context.arc(40, 38, 8, 0, Math.PI * 2)
+    context.fillStyle = '#ffffff'
+    context.fill()
+    context.strokeStyle = color
+    context.lineWidth = 2
+    context.stroke()
+    context.fillStyle = color
+    context.font = 'bold 12px Arial, sans-serif'
+    context.textAlign = 'center'
+    context.textBaseline = 'middle'
+    context.fillText('?', 40, 38)
+  }
   map.addImage(name, context.getImageData(0, 0, canvas.width, canvas.height), { pixelRatio: 2 })
 }
 
@@ -327,12 +388,16 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           layout: { 'text-field': ['get', 'name'], 'text-size': 12, 'text-allow-overlap': false },
           paint: { 'text-color': '#ffffff', 'text-halo-color': '#17202a', 'text-halo-width': 1.5 },
         })
-        addPinIcon(loadedMap, 'atlas-pin-pole', '#fd7e14')
-        addPinIcon(loadedMap, 'atlas-pin-odc', '#6f42c1')
-        addPinIcon(loadedMap, 'atlas-pin-odp', '#198754')
-        addPinIcon(loadedMap, 'atlas-pin-pop', '#dc3545')
-        addPinIcon(loadedMap, 'atlas-pin-analysis', '#dc3545')
-        addPinIcon(loadedMap, 'atlas-pin-reference', '#d63384')
+        for (const [kind, marker] of Object.entries(networkMapMarkerStyles)) {
+          const isPole = kind.startsWith('pole-')
+          const icon = isPole ? `atlas-pole-${kind.slice(5)}` : `atlas-pin-${kind}`
+          const poleHeight = kind === 'pole-5m' ? 5 : kind === 'pole-7m' ? 7 : undefined
+          const addIcon = (iconName: string, candidate = false) => isPole
+            ? addPoleIcon(loadedMap, iconName, marker.color, poleHeight, candidate)
+            : addPinIcon(loadedMap, iconName, marker.color, marker.glyph, candidate)
+          addIcon(icon)
+          if (kind !== 'reference' && kind !== 'analysis') addIcon(`${icon}-candidate`, true)
+        }
         loadedMap.addLayer({
           id: 'network-point-clusters',
           type: 'circle',
@@ -365,7 +430,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           source: 'network-point-features',
           filter: ['all', ['match', ['geometry-type'], ['Point', 'MultiPoint'], true, false], ['!', ['has', 'point_count']]],
           layout: {
-            'icon-image': ['match', ['get', 'layer'], 'poles', 'atlas-pin-pole', 'odc', 'atlas-pin-odc', 'odp', 'atlas-pin-odp', 'pops', 'atlas-pin-pop', 'references', 'atlas-pin-reference', 'analysis', 'atlas-pin-analysis', 'atlas-pin-analysis'],
+            'icon-image': ['get', 'mapIcon'],
             'icon-anchor': 'bottom',
             'icon-size': 0.9,
             'icon-allow-overlap': true,
@@ -546,7 +611,7 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
           if (typeof properties?.layer === 'string') {
             const detail = document.createElement('div')
             detail.className = 'network-map-popup-layer'
-            detail.textContent = layerLabel(properties.layer, feature.geometry.type)
+            detail.textContent = hoverTypeLabel({ geometry: feature.geometry, properties })
             popupContent.append(detail)
           }
           const rawAttributes = properties?.attributes && typeof properties.attributes === 'object'
@@ -694,12 +759,16 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
     const pointFeatures: NetworkMapFeature[] = []
     const nonPointFeatures: NetworkMapFeature[] = []
     for (const feature of visibleFeatures) {
-      if (feature.geometry.type === 'Point') pointFeatures.push(feature)
+      if (feature.geometry.type === 'Point') pointFeatures.push({
+        ...feature,
+        properties: { ...feature.properties, mapIcon: networkMapMarkerImage(feature.properties, feature.geometry.type) },
+      })
       else if (feature.geometry.type === 'MultiPoint') {
         feature.geometry.coordinates.forEach((coordinates, index) => pointFeatures.push({
           ...feature,
           id: `${String(feature.id ?? feature.properties.id)}:point-${index}`,
           geometry: { type: 'Point', coordinates },
+          properties: { ...feature.properties, mapIcon: networkMapMarkerImage(feature.properties, 'Point') },
         }))
       } else nonPointFeatures.push(feature)
     }

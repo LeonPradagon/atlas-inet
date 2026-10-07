@@ -83,8 +83,8 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
     }
     const start = await point(schema.networkNodes, 'START', 106.8)
     const end = await point(schema.networkNodes, 'END', 106.9)
-    const pole7 = await point(schema.poles, 'POLE7', 106.83, -6.21, { heightM: 7 })
-    const pole9 = await point(schema.poles, 'POLE9', 106.86, -6.21, { heightM: 9 })
+    const pole5 = await point(schema.poles, 'POLE5', 106.83, -6.21, { heightM: 5 })
+    const pole7 = await point(schema.poles, 'POLE7', 106.86, -6.21, { heightM: 7 })
     const odc = await point(schema.odcs, 'ODC1', 106.83, -6.22)
     const odp = await point(schema.odps, 'ODP1', 106.86, -6.22)
     const bOdc = await point(schema.odcs, 'ODC1', 106.84, -6.2, { ownerEntityId: beta.entityId, datasetId: bDataset.id })
@@ -106,7 +106,7 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
     await segment('FAR', { geometry: geom('LineString', [[108, -6.2], [108.1, -6.2]]) })
     const draftSegment = await segment('DRAFT', { datasetId: aDraft.id, startNodeId: null, endNodeId: null, roadSide: null })
     const bSegment = await segment('B-SECRET', { ownerEntityId: beta.entityId, datasetId: bDataset.id, startNodeId: null, endNodeId: null, roadSide: null })
-    for (const asset of [pole7, pole9]) await db.insert(schema.segmentPoles).values({ segmentId: main.id, assetId: asset.id, ownerEntityId: alpha.entityId, datasetId: aDataset.id })
+    for (const asset of [pole5, pole7]) await db.insert(schema.segmentPoles).values({ segmentId: main.id, assetId: asset.id, ownerEntityId: alpha.entityId, datasetId: aDataset.id })
     await db.insert(schema.segmentOdcs).values({ segmentId: main.id, assetId: odc.id, ownerEntityId: alpha.entityId, datasetId: aDataset.id })
     await db.insert(schema.segmentOdps).values({ segmentId: main.id, assetId: odp.id, ownerEntityId: alpha.entityId, datasetId: aDataset.id })
 
@@ -124,7 +124,7 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       await assert.rejects(segment('FRACTIONAL-CORE', { installedCoreCount: 1.5 }), (error) => error.cause?.code === '22P02')
     })
     await t.test('pole heights, installation enum and direction metadata are validated', async () => {
-      await assert.rejects(point(schema.poles, 'BAD-HEIGHT', 106.84, -6.2, { heightM: 8 }), (error) => error.cause?.code === '23514')
+      await assert.rejects(point(schema.poles, 'BAD-HEIGHT', 106.84, -6.2, { heightM: 9 }), (error) => error.cause?.code === '23514')
       await assert.rejects(segment('BAD-METHOD', { installationMethod: 'OTHER' }), (error) => error.cause?.code === '23514')
       await assert.rejects(segment('BAD-SIDE', { roadSide: 'NORTH' }), (error) => error.cause?.code === '23514')
       await assert.rejects(segment('BAD-TOPOLOGY', { endNodeId: null }), (error) => error.cause?.code === '23514')
@@ -212,7 +212,7 @@ test('network domain: PostGIS validation, viewport API, asset separation and ent
       assert.equal(data.nodes.start.id, start.id)
       assert.equal(data.nodes.end.id, end.id)
       assert.deepEqual(data.geometry.coordinates, [[106.8, -6.2], [106.9, -6.2]])
-      assert.deepEqual(data.assets.poles.map((pole) => pole.heightM), [7, 9])
+      assert.deepEqual(data.assets.poles.map((pole) => pole.heightM), [5, 7])
       assert.deepEqual(data.assets.odcs.map((asset) => asset.id), [odc.id])
       assert.deepEqual(data.assets.odps.map((asset) => asset.id), [odp.id])
       assert.deepEqual(data.assetCounts, { poles: 2, odcs: 1, odps: 1 })
