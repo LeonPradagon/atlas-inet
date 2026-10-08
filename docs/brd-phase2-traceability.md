@@ -15,7 +15,7 @@ Baseline: BRD supplied by user (25 Aug 2026), code reviewed 5 Oct 2026. “Imple
 | --- | --- | --- |
 | FR-01 | Implemented with data caveat | Individual address geocoding uses self-hosted Photon; ambiguous/coarse candidates require explicit confirmation. OSM coverage is not guaranteed. `AnalysisPage.tsx`, `InternalAdapters`. |
 | FR-02 | **Partial / blocked for production** | Nearest published network and geometric distance are calculated. Cable route/length requires running internal routing, published network topology, a validated ODC/ODP, and Engineering-approved detour/slack/additional-length policy. Cable estimate deliberately remains null otherwise. `analysis.service.ts`, `self-hosted-routing.md`. |
-| FR-03 | Implemented | KML/KMZ bulk point/address placemarks; preview markers, approval, durable processing, cancel/retry. Results export as XLSX. `jobs`, `imports` modules. |
+| FR-03 | Implemented | Excel Input template/upload alongside KML/KMZ point/address placemarks; per-row validation, preview markers, approval, durable processing, cancel/retry. Results export as XLSX. `jobs` module; verification in `fr01-04-progress.md`. |
 | FR-04 | Partial, follows FR-02 | Excel result/export includes nearest network and route/estimation status. Estimated cable length is null until FR-02 dependencies are approved and operational. |
 | FR-05 | Implemented | Booking creates capacity hold per segment with idempotency and expiry policy. `capacity.service.ts`. |
 | FR-06 | Implemented | Segment/report capacity exposes used, idle, booked, available, and waiting-list count/core totals. Unknown capacity remains explicit. `network.repository.ts`, `reports.service.ts`. |

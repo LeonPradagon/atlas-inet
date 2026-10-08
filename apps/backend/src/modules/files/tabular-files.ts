@@ -5,6 +5,8 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser'
 
 export interface UploadFile { originalname: string; mimetype: string; buffer: Buffer; size: number }
 export const uploadLimits = { fileSize: 20 * 1024 * 1024, files: 1, fields: 8, fieldSize: 512 * 1024 }
+export const analysisUploadLimits = { ...uploadLimits, fileSize: 50 * 1024 * 1024 }
+export const analysisExcelRowLimit = 50_000
 export type Cell = string | number | boolean | null
 
 async function inspectArchive(buffer: Buffer): Promise<void> {
@@ -52,10 +54,12 @@ async function inspectArchive(buffer: Buffer): Promise<void> {
   })
 }
 
-export function validateUpload(file: UploadFile | undefined): UploadFile {
-  if (!file || !file.buffer?.length || file.buffer.length > uploadLimits.fileSize) throw new BadRequestException('A file of at most 20 MB is required')
+export function validateUpload(file: UploadFile | undefined, allowExcel = false): UploadFile {
+  const maxSize = allowExcel && /\.xlsx$/i.test(file?.originalname ?? '') ? analysisUploadLimits.fileSize : uploadLimits.fileSize
+  if (!file || !file.buffer?.length || file.buffer.length > maxSize) throw new BadRequestException(`A file of at most ${maxSize / 1024 / 1024} MB is required`)
   if (file.originalname.length > 200 || /[\x00-\x1f]/.test(file.originalname)) throw new BadRequestException('Invalid upload filename')
-  if (!/\.(kml|kmz)$/i.test(file.originalname)) throw new BadRequestException('Only .kml or .kmz upload files are supported')
+  const extension = allowExcel ? /\.(kml|kmz|xlsx)$/i : /\.(kml|kmz)$/i
+  if (!extension.test(file.originalname)) throw new BadRequestException(allowExcel ? 'Only .xlsx, .kml or .kmz upload files are supported' : 'Only .kml or .kmz upload files are supported')
   return file
 }
 
@@ -129,16 +133,18 @@ export async function readKmlDocument(file: UploadFile): Promise<Record<string, 
   catch { throw new BadRequestException('Cannot parse KML document') }
 }
 
-export async function readWorkbook(file: UploadFile, sheetName: string) {
+export async function readWorkbook(file: UploadFile, sheetName: string, maxRows = 10_000) {
   if (!/\.xlsx$/i.test(file.originalname)) throw new BadRequestException('Expected .xlsx file')
   if (!['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/octet-stream', 'application/zip'].includes(file.mimetype)) throw new BadRequestException('Invalid XLSX content type')
   await inspectArchive(file.buffer)
   const workbook = new ExcelJS.Workbook()
   try { await workbook.xlsx.load(file.buffer as unknown as ExcelJS.Buffer) } catch { throw new BadRequestException('Cannot read XLSX workbook') }
   const sheet = workbook.getWorksheet(sheetName)
-  if (!sheet || sheet.rowCount > 10_001 || sheet.columnCount > 30) throw new BadRequestException(`Expected ${sheetName} sheet with at most 10,000 rows and 30 columns`)
-  const headers = sheet.getRow(1).values as ExcelJS.CellValue[]
-  const names = headers.slice(1).map((value) => typeof value === 'string' ? value.trim() : '')
+  if (!sheet || sheet.rowCount > maxRows + 1 || sheet.columnCount > 30) throw new BadRequestException(`Expected ${sheetName} sheet with at most ${maxRows.toLocaleString('en-US')} rows and 30 columns`)
+  const names = Array.from({ length: sheet.columnCount }, (_, index) => {
+    const value = sheet.getRow(1).getCell(index + 1).value
+    return typeof value === 'string' ? value.trim() : ''
+  })
   if (names.some((name) => !name) || new Set(names).size !== names.length) throw new BadRequestException('Headers must be nonempty and unique')
   const rows: { rowNumber: number; values: Record<string, Cell>; error?: string }[] = []
   for (let number = 2; number <= sheet.rowCount; number++) {

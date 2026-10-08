@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { deflateRawSync } from 'node:zlib'
 import ExcelJS from 'exceljs'
 import { parseAssetFile } from '../dist/modules/imports/import-parser.js'
-import { parseBulkFile } from '../dist/modules/jobs/bulk-parser.js'
-import { readWorkbook,spreadsheet,validateUpload } from '../dist/modules/files/tabular-files.js'
+import { bulkInputColumns, parseBulkFile } from '../dist/modules/jobs/bulk-parser.js'
+import { analysisExcelRowLimit, analysisUploadLimits, uploadLimits, readWorkbook,spreadsheet,validateUpload } from '../dist/modules/files/tabular-files.js'
 const file=(name,buffer) => ({ originalname:name,buffer,size:buffer.length,mimetype:name.endsWith('.kml') ? 'application/vnd.google-earth.kml+xml' : name.endsWith('.kmz') ? 'application/vnd.google-earth.kmz' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
 function kmz(name,content) {
   const filename=Buffer.from(name),plain=Buffer.from(content),compressed=deflateRawSync(plain)
@@ -178,8 +178,90 @@ test('XLSX container and headers are validated before processing',async () => {
   const workbook=new ExcelJS.Workbook(),sheet=workbook.addWorksheet('Input')
   sheet.addRow(['address','address']);sheet.addRow(['test','test'])
   await assert.rejects(readWorkbook(file('duplicate.xlsx',Buffer.from(await workbook.xlsx.writeBuffer())),'Input'),/unique/)
+  sheet.getRow(1).values=['address',null,'latitude']
+  await assert.rejects(readWorkbook(file('missing-header.xlsx',Buffer.from(await workbook.xlsx.writeBuffer())),'Input'),/nonempty/)
   const buffer=await spreadsheet([{ name:'Assets',columns:['kind','code'],rows:[{ kind:'ODP',code:'test' }] }])
   await assert.rejects(readWorkbook(file('wrong.xlsx',buffer),'Input'),/Expected Input sheet/)
+})
+test('analysis Excel accepts address-only, paired numeric/text coordinates and zero without geocoding metadata',async () => {
+  const buffer=await spreadsheet([{ name:'Input',columns:bulkInputColumns,rows:[
+    { reference_id:'ADDRESS',customer_name:'Synthetic customer',address:'Synthetic address' },
+    { reference_id:'COORDS',latitude:'-6.2',longitude:'106.8',address:'Metadata only',notes:'=1+1' },
+    { latitude:0,longitude:0 },
+  ] }])
+  const upload=validateUpload(file('input.xlsx',buffer),true)
+  const rows=await parseBulkFile(upload,'11111111-1111-4111-8111-111111111111')
+  assert.deepEqual(rows.map((row)=>row.error),[null,null,null])
+  assert.equal(rows[0].input.analysis.address,'Synthetic address')
+  assert.equal(rows[0].input.analysis.latitude,undefined)
+  assert.equal(rows[1].input.analysis.latitude,-6.2);assert.equal(rows[1].input.analysis.longitude,106.8)
+  assert.equal(rows[1].input.notes,'=1+1');assert.equal(rows[2].referenceId,'4')
+  assert.equal(rows[2].input.analysis.latitude,0);assert.equal(rows[2].input.analysis.longitude,0)
+  assert.throws(()=>validateUpload(upload),/Only .kml or .kmz/)
+})
+test('analysis Excel marks duplicate, incomplete, invalid, boolean and oversized rows without guessing coordinates',async () => {
+  const buffer=await spreadsheet([{ name:'Input',columns:bulkInputColumns,rows:[
+    { reference_id:'A',latitude:-6.2,longitude:106.8 },
+    { reference_id:'A',latitude:-6.2,longitude:106.8 },
+    { reference_id:'PARTIAL',address:'Cannot override invalid coordinate',latitude:-6.2 },
+    { reference_id:'RANGE',latitude:91,longitude:106.8 },
+    { reference_id:'TEXT',latitude:'wrong',longitude:106.8 },
+    { reference_id:'BOOL',latitude:true,longitude:106.8 },
+    { reference_id:'BLANK',latitude:' ',longitude:106.8 },
+    { reference_id:'NO-LOCATION' },
+    { reference_id:'LONG',address:'x'.repeat(1001) },
+    { reference_id:'x'.repeat(201),address:'Synthetic address' },
+    { reference_id:'PIC',latitude:-6.2,longitude:106.8,connection_point_id:'11111111-1111-4111-8111-111111111111' },
+  ] }])
+  const rows=await parseBulkFile(file('invalid.xlsx',buffer),'11111111-1111-4111-8111-111111111111')
+  assert.equal(rows[0].error,null)
+  for (const row of rows.slice(1)) assert.ok(row.error,row.referenceId)
+  assert.match(rows[1].error,/Duplicate/);assert.match(rows[2].error,/paired/)
+  assert.match(rows[5].error,/boolean/);assert.match(rows[6].error,/blank/)
+  assert.match(rows[10].error,/provided together/)
+})
+test('analysis Excel requires the documented Input sheet and columns',async () => {
+  const entity='11111111-1111-4111-8111-111111111111'
+  for (const [columns,rows,expected] of [
+    [['address','typo'],[{address:'Synthetic address'}],/Supported Input columns/],
+    [['reference_id'],[{reference_id:'A'}],/requires address/],
+    [['latitude'],[{latitude:-6.2}],/requires address/],
+  ]) {
+    const buffer=await spreadsheet([{name:'Input',columns,rows}])
+    await assert.rejects(parseBulkFile(file('input.xlsx',buffer),entity),expected)
+  }
+  const empty=await spreadsheet([{name:'Input',columns:bulkInputColumns,rows:[]}])
+  await assert.rejects(parseBulkFile(file('empty.xlsx',empty),entity),/no input rows/)
+  const large=await spreadsheet([{name:'Input',columns:['address'],rows:Array.from({length:analysisExcelRowLimit+1},()=>({address:'Synthetic address'}))}])
+  await assert.rejects(parseBulkFile(file('large.xlsx',large),entity),/at most 50,000/)
+})
+test('analysis Excel accepts all 50,000 rows; unrelated workbook reads retain 10,000 rows',async () => {
+  const buffer=await spreadsheet([{name:'Input',columns:['latitude','longitude'],rows:Array.from({length:analysisExcelRowLimit},()=>({latitude:-6.2,longitude:106.8}))}])
+  const rows=await parseBulkFile(file('max.xlsx',buffer),'11111111-1111-4111-8111-111111111111')
+  assert.equal(rows.length,50_000);assert.equal(rows[0].error,null);assert.equal(rows.at(-1).error,null)
+  assert.equal(rows.at(-1).rowNumber,50_001)
+  await assert.rejects(readWorkbook(file('max.xlsx',buffer),'Input'),/at most 10,000/)
+})
+test('only bulk Excel accepts 50 MB; asset and KML limits remain 20 MB',() => {
+  const bytes=Buffer.alloc(analysisUploadLimits.fileSize+1)
+  const exact=file('max.xlsx',bytes.subarray(0,analysisUploadLimits.fileSize))
+  assert.equal(validateUpload(exact,true),exact)
+  assert.throws(()=>validateUpload(file('too-large.xlsx',bytes),true),/at most 50 MB/)
+  const overAssetLimit=file('large.kml',bytes.subarray(0,uploadLimits.fileSize+1))
+  assert.throws(()=>validateUpload(overAssetLimit),/at most 20 MB/)
+  assert.throws(()=>validateUpload(overAssetLimit,true),/at most 20 MB/)
+  assert.throws(()=>validateUpload(exact),/at most 20 MB/)
+})
+test('analysis Excel rejects formula/hyperlink cells per row and fake workbook content',async () => {
+  const workbook=new ExcelJS.Workbook(),sheet=workbook.addWorksheet('Input')
+  sheet.addRow(['reference_id','address','latitude','longitude'])
+  sheet.addRow(['FORMULA','Synthetic address',{formula:'1+1',result:2},106.8])
+  sheet.addRow(['LINK',{text:'Synthetic address',hyperlink:'https://example.test'},null,null])
+  sheet.addRow(['GOOD','Synthetic address',null,null])
+  const rows=await parseBulkFile(file('input.xlsx',Buffer.from(await workbook.xlsx.writeBuffer())),'11111111-1111-4111-8111-111111111111')
+  assert.match(rows[0].error,/Formulas/);assert.match(rows[1].error,/hyperlinks/);assert.equal(rows[2].error,null)
+  await assert.rejects(parseBulkFile(file('fake.xlsx',Buffer.from('<kml/>')),'11111111-1111-4111-8111-111111111111'),/Invalid XLSX archive/)
+  assert.throws(()=>validateUpload(file('old.xls',Buffer.from('xls')),true),/Only .xlsx/)
 })
 test('KML address-only point assets stage for geocoding; actual geometry is never invented',async () => {
   const xml=`<kml><Document>

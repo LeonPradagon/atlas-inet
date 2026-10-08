@@ -35,10 +35,11 @@ export function SegmentDetail({ id, editable = false, mapContext = false }: { id
     const response = await atlasApi.network.segment(id, signal)
     if (response.data.ownerEntityId !== entity!.id) throw new ApiError('Segmen berada di entitas lain. Pilih entitas pemilik.', 403)
     return response
-  }, enabled: validId && can('network.read') })
+   }, enabled: validId && can('network.read'), refetchInterval: 15_000 })
   if (!validId || !can('network.read')) return <p className="text-secondary">Pilih ID segmen dengan izin baca untuk melihat detail kapasitas.</p>
   return <ContentCard title={mapContext ? 'Detail aset jaringan pada peta' : 'Detail segmen'}><QueryState query={query}>{query.data && <>
     <h4>{query.data.data.cableName}</h4><p className="small text-secondary">{query.data.data.segmentCode} · Dataset {query.data.data.datasetVersion} · {query.data.data.status}</p>
+    <CapacityIndicator capacity={query.data.data.capacity} />
     {mapContext ? <dl className="row">
       <dt className="col-sm-5">Tipe kabel</dt><dd className="col-sm-7">{query.data.data.cableType?.name ?? 'Belum diketahui'}</dd>
       <dt className="col-sm-5">Metode instalasi</dt><dd className="col-sm-7">{query.data.data.installationMethod === 'AERIAL' ? 'Aerial' : query.data.data.installationMethod === 'BURIAL' ? 'Burial' : 'Belum diketahui'}</dd>
@@ -71,8 +72,36 @@ export function SegmentDetail({ id, editable = false, mapContext = false }: { id
       <p>ODP: {query.data.data.assets?.odps.map((p) => p.code).join(', ') || 'Tidak tercatat'}</p>
     </>}
     {editable && can('network.write') && <MetadataEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
+    {!editable && can('network.write') && <CapacityEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
     {editable && <NameHistoryPanel id={id} />}
   </>}</QueryState></ContentCard>
+}
+function CapacityIndicator({ capacity }: { capacity: Segment['capacity'] }) {
+  if (capacity.total == null) return <div className="alert alert-warning" role="status">Booking belum dapat dilakukan: total core harus diisi dan kapasitas divalidasi tim jaringan. Metadata lain boleh dilengkapi kemudian; kapasitas tidak ditebak dari booking.</div>
+  return <section aria-label="Status kapasitas core" className="mb-3">
+    <p className="mb-2"><strong>{capacity.available} core tersedia</strong> dari {capacity.total} · {capacity.booked} Booked · {capacity.used} Used</p>
+    <div className="progress" role="img" aria-label={`Total ${capacity.total}, Used ${capacity.used}, Booked ${capacity.booked}, Available ${capacity.available}`}>
+      <div className="progress-bar bg-danger" style={{ width: `${capacity.used / capacity.total * 100}%` }} />
+      <div className="progress-bar bg-warning" style={{ width: `${capacity.booked / capacity.total * 100}%` }} />
+      <div className="progress-bar bg-success" style={{ width: `${(capacity.available ?? 0) / capacity.total * 100}%` }} />
+    </div>
+    <p className="form-text">Merah: Used · Kuning: Booked · Hijau: Available. Diperbarui setelah transaksi dan setiap 15 detik. Booking tidak mengubah total core atau metadata fisik.</p>
+  </section>
+}
+function CapacityEditor({ segment }: { segment: Segment }) {
+  const [core, setCore] = useState(segment.installedCoreCount?.toString() ?? '')
+  const [confirmed, setConfirmed] = useState(false)
+  const update = useDomainMutation(() => atlasApi.network.update(segment.id, segment.version, { installedCoreCount: Number(core), capacityValidated: true }))
+  return <details className="mb-3" open={!segment.capacityValidated}>
+    <summary>Isi / validasi kapasitas untuk booking</summary>
+    <form onSubmit={(event) => { event.preventDefault(); if (confirmed && !update.isPending) update.mutate() }}>
+      <p className="form-text">Isi total core berdasarkan data fisik yang diverifikasi, bukan jumlah core yang ingin dipesan. Pemakaian existing harus tercatat pada ledger Used sebelum menerima booking; Available berasal dari pencatatan sistem.</p>
+      <Field name={`capacity-core-${segment.id}`} label="Total core untuk booking" value={core} onChange={setCore} type="number" min={Math.max(1, segment.capacity.used + segment.capacity.booked)} max={1_000_000} step="1" />
+      <label className="form-check mb-3"><input className="form-check-input" type="checkbox" checked={confirmed} required onChange={(event) => setConfirmed(event.target.checked)} />Saya sudah memverifikasi total core dan pencatatan pemakaian existing.</label>
+      <button className="btn btn-outline-primary" disabled={!confirmed || !core || update.isPending}>Simpan kapasitas tervalidasi</button>
+      <MutationStatus mutation={update} />
+    </form>
+  </details>
 }
 function MetadataEditor({ segment }: { segment: Segment }) {
   const [name, setName] = useState(segment.cableName)

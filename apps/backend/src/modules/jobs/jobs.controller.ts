@@ -4,23 +4,33 @@ import type { Response } from 'express'
 import { z } from 'zod'
 import { entityPageSchema, parseInput } from '../../common/domain-input.js'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
-import { uploadLimits,validateUpload,type UploadFile } from '../files/tabular-files.js'
+import { analysisUploadLimits,validateUpload,type UploadFile } from '../files/tabular-files.js'
 import { JobsService } from './jobs.service.js'
 const rowQuery = entityPageSchema.omit({ entityId:true })
 @Controller()
 @UseGuards(AuthSessionGuard)
 export class JobsController {
   constructor(private readonly jobs: JobsService) {}
+  @Get('analysis/template')
+  async template(@Req() req: AuthenticatedRequest, @Query('entityId') entityId: string, @Res() response: Response) {
+    const file = await this.jobs.template(req.authSession.user.id, parseInput(z.uuid(), entityId))
+    response.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').attachment('atlas-analysis-template.xlsx').send(file)
+  }
   @Post('analysis/uploads')
-  @UseInterceptors(FileInterceptor('file',{ limits:uploadLimits }))
+  @UseInterceptors(FileInterceptor('file',{ limits:analysisUploadLimits }))
   upload(@Req() req: AuthenticatedRequest,@Body() body: unknown,@UploadedFile() file: UploadFile | undefined) {
-    return this.jobs.upload(req.authSession.user.id,parseInput(z.object({ entityId:z.uuid() }).strict(),body).entityId,validateUpload(file))
+    return this.jobs.upload(req.authSession.user.id,parseInput(z.object({ entityId:z.uuid() }).strict(),body).entityId,validateUpload(file,true))
   }
   @Post('analysis/jobs')
   @HttpCode(202)
   submit(@Req() req: AuthenticatedRequest,@Body() body: unknown) {
     const input = parseInput(z.object({ uploadId:z.uuid(),processValidRows:z.boolean() }).strict(),body)
     return this.jobs.submit(req.authSession.user.id,input.uploadId,input.processValidRows)
+  }
+  @Get('analysis/uploads/:id/rows')
+  uploadRows(@Req() req: AuthenticatedRequest, @Param('id') id: string, @Query() query: unknown) {
+    const input = parseInput(rowQuery.extend({ pageSize: z.coerce.number().int().min(1).max(1000).default(1000) }), query)
+    return this.jobs.uploadRows(req.authSession.user.id, parseInput(z.uuid(), id), input.page, input.pageSize)
   }
   @Post('reports/exports')
   @HttpCode(202)

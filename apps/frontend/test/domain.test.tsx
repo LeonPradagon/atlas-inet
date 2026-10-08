@@ -148,7 +148,7 @@ describe('operational API interactions', () => {
     vi.spyOn(atlasApi.jobs, 'get').mockResolvedValue({ data: { id: 'job-real', entityId: alpha, type: 'ANALYSIS', status: 'COMPLETED', total: 1, completed: 1, succeeded: 1, failed: 0, error: null, cancelRequestedAt: null } })
     vi.spyOn(atlasApi.jobs, 'rows').mockResolvedValue({ data: [] })
     mount(<AnalysisPage />, ['analysis.create', 'analysis.bulk'])
-    await userEvent.upload(screen.getByLabelText(/File .kml/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
+    await userEvent.upload(screen.getByLabelText(/File .xlsx/), new File(['<kml/>'], 'fixture.kml', { type: 'application/vnd.google-earth.kml+xml' }))
     // jsdom's file-input constraint validation does not recognize user-event's FileList.
     fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
     await screen.findByText('REF')
@@ -156,6 +156,106 @@ describe('operational API interactions', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Setujui proses baris valid' }))
     await waitFor(() => expect(submit).toHaveBeenCalledWith('upload-real'))
     expect(await screen.findByText('job-real')).toBeTruthy()
+  })
+  it('loads all bulk preview pages onto the map beyond 100 and pages the table', async () => {
+    const row = (i: number) => ({ rowNumber: i + 2, referenceId: `REF-${i}`, error: i === 1000 ? 'Invalid location' : null, input: { latitude: -6.2, longitude: 106.8 } })
+    vi.spyOn(atlasApi.analysis, 'upload').mockResolvedValue({ data: { id: 'all-preview', preview: Array.from({ length: 100 }, (_, i) => row(i)) }, meta: { total: 1002 } } as never)
+    const pages = vi.spyOn(atlasApi.analysis, 'uploadRows').mockImplementation(async (_id, page) => ({ data: page === 1 ? Array.from({ length: 1000 }, (_, i) => row(i)) : [row(1000), row(1001)], meta: { page, pageSize: 1000, total: 1002 } }))
+    const submit = vi.spyOn(atlasApi.analysis, 'submit')
+    mount(<AnalysisPage />, ['analysis.bulk'])
+    await userEvent.upload(screen.getByLabelText(/File .xlsx/), new File(['synthetic'], 'input.xlsx'))
+    fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
+    expect(await screen.findByText('Map: 1001 features')).toBeTruthy()
+    expect(screen.getByText(/Dimuat 1002 dari 1002/)).toBeTruthy()
+    expect(pages).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText('REF-100')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Berikutnya' }))
+    expect(screen.getByText('REF-100')).toBeTruthy()
+    await userEvent.selectOptions(screen.getByLabelText('Baris per halaman preview analisis'), '10')
+    expect(screen.getByText('REF-0')).toBeTruthy()
+    expect(screen.queryByText('REF-10')).toBeNull()
+    expect(screen.getByText('Map: 1001 features')).toBeTruthy()
+    expect(submit).not.toHaveBeenCalled()
+  })
+  it('validates only capacity without naming policy and refreshes detail from server', async () => {
+    const initial = { id: segment, ownerEntityId: alpha, segmentCode: 'SEG-1', cableName: 'Imported label', datasetVersion: 'v1', version: 1,
+      installedCoreCount: null, capacityValidated: false, status: 'ACTIVE', cableType: null, installationMethod: null, roadSide: null,
+      geometry: { type: 'LineString', coordinates: [[106,-7],[107,-6]] }, completeness: { status: 'INCOMPLETE', missingFields: ['cableType'] },
+      capacity: { total: null, used: 0, booked: 0, idle: null, available: null, waitingCount: 0, waitingCores: 0, asOf: '2026-10-08T00:00:00Z' } }
+    let current = initial
+    vi.spyOn(atlasApi.network, 'segment').mockImplementation(async () => ({ data: current }) as never)
+    const update = vi.spyOn(atlasApi.network, 'update').mockImplementation(async () => {
+      current = { ...initial, version: 2, installedCoreCount: 24, capacityValidated: true, capacity: { ...initial.capacity, total: 24, idle: 24, available: 24 } } as never
+      return { data: { id: segment, version: 2 } }
+    })
+    mount(<SegmentDetail id={segment} />, ['network.read', 'network.write'])
+    const field = await screen.findByLabelText('Total core untuk booking')
+    fireEvent.change(field, { target: { value: '24' } })
+    expect((screen.getByRole('button', { name: 'Simpan kapasitas tervalidasi' }) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.click(screen.getByLabelText('Saya sudah memverifikasi total core dan pencatatan pemakaian existing.'))
+    await userEvent.click(screen.getByRole('button', { name: 'Simpan kapasitas tervalidasi' }))
+    expect(await screen.findByText('24 core tersedia')).toBeTruthy()
+    expect(update).toHaveBeenCalledWith(segment, 1, { installedCoreCount: 24, capacityValidated: true })
+    expect(screen.getByRole('img', { name: 'Total 24, Used 0, Booked 0, Available 24' })).toBeTruthy()
+  })
+  it('refreshes core counters after booking and sends the selected Presales PIC', async () => {
+    const capacity = { total: 24, used: 0, booked: 0, idle: 24, available: 24, waitingCount: 0, waitingCores: 0, asOf: '2026-10-08T00:00:00Z' }
+    const detail = { id: segment, ownerEntityId: alpha, segmentCode: 'SEG-1', cableName: 'Imported label', datasetVersion: 'v1', version: 1, installedCoreCount: 24, capacityValidated: true, status: 'ACTIVE', cableType: null, installationMethod: null, roadSide: null, completeness: { status: 'INCOMPLETE', missingFields: ['cableType'] }, capacity }
+    vi.spyOn(atlasApi.network, 'segments').mockImplementation(async () => ({ data: [detail] }) as never)
+    vi.spyOn(atlasApi.network, 'segment').mockImplementation(async () => ({ data: detail }) as never)
+    vi.mocked(atlasApi.capacity.presalesUsers).mockResolvedValue({ data: [{ id: 'alice', name: 'Alice' }, { id: 'charlie', name: 'Charlie' }] })
+    const book = vi.spyOn(atlasApi.capacity, 'book').mockImplementation(async () => { capacity.booked=2;capacity.available=22;return { data: { id: 'new-booking' } } as never })
+    mount(<ReservationWorkspace />, ['bookings.create','network.read'])
+    await userEvent.selectOptions(await screen.findByLabelText('1. Pilih segmen jaringan'), segment)
+    expect(await screen.findByText('24 core tersedia')).toBeTruthy()
+    await userEvent.selectOptions(screen.getByLabelText('PIC Presales'), 'charlie')
+    for (const label of ['Nama customer','PIC customer','Kontak PIC customer','Kebutuhan / alasan']) fireEvent.change(screen.getByLabelText(label), { target: { value: 'Synthetic test' } })
+    fireEvent.change(screen.getByLabelText('Kebutuhan core'), { target: { value: '2' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Booking core' }))
+    expect(await screen.findByText('22 core tersedia')).toBeTruthy()
+    expect(book.mock.calls[0][0]).toMatchObject({ presalesUserId: 'charlie', coreCount: 2 })
+    expect(screen.getByRole('img', { name: 'Total 24, Used 0, Booked 2, Available 22' })).toBeTruthy()
+  })
+  it('accepts Excel alongside KML/KMZ and downloads the scoped template without submitting a job', async () => {
+    const template = vi.spyOn(atlasApi.analysis, 'template').mockResolvedValue(undefined)
+    const upload = vi.spyOn(atlasApi.analysis, 'upload').mockResolvedValue({ data: { id: 'excel-preview', preview: [{ rowNumber: 2, referenceId: 'EXCEL-REF', error: null }] } })
+    const submit = vi.spyOn(atlasApi.analysis, 'submit')
+    mount(<AnalysisPage />, ['analysis.bulk'])
+    const input = screen.getByLabelText(/File .xlsx/) as HTMLInputElement
+    expect(input.accept).toBe('.xlsx,.kml,.kmz')
+    await userEvent.click(screen.getByRole('button', { name: 'Unduh template Excel' }))
+    await waitFor(() => expect(template).toHaveBeenCalledWith(alpha))
+    const file = new File(['synthetic workbook'], 'input.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    await userEvent.upload(input, file)
+    fireEvent.submit(screen.getByRole('button', { name: 'Upload dan preview' }).closest('form')!)
+    expect(await screen.findByText('EXCEL-REF')).toBeTruthy()
+    expect(upload).toHaveBeenCalledWith(alpha, file)
+    expect(submit).not.toHaveBeenCalled()
+  })
+  it('does not turn empty individual coordinates into a location at zero', async () => {
+    const run = vi.spyOn(atlasApi.analysis, 'run')
+    mount(<AnalysisPage />, ['analysis.create'])
+    expect((screen.getByLabelText('Lintang') as HTMLInputElement).required).toBe(true)
+    expect((screen.getByLabelText('Bujur') as HTMLInputElement).required).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Jalankan analisis' }))
+    expect(run).not.toHaveBeenCalled()
+  })
+  it('allows Excel above 20 MB up to 50 MB while preserving the KML limit', async () => {
+    mount(<AnalysisPage />, ['analysis.bulk'])
+    const input=screen.getByLabelText(/File .xlsx/) as HTMLInputElement
+    const file=(name:string,size:number) => {
+      const value=new File(['synthetic'],name)
+      Object.defineProperty(value,'size',{value:size})
+      return value
+    }
+    await userEvent.upload(input,file('large.xlsx',50*1024*1024))
+    expect((screen.getByRole('button',{name:'Upload dan preview'}) as HTMLButtonElement).disabled).toBe(false)
+    await userEvent.upload(input,file('too-large.xlsx',50*1024*1024+1))
+    expect((screen.getByRole('button',{name:'Upload dan preview'}) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toContain('50 MB')
+    await userEvent.upload(input,file('large.kml',21*1024*1024))
+    expect((screen.getByRole('button',{name:'Upload dan preview'}) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByRole('alert').textContent).toContain('20 MB')
   })
   it('shows valid imported KML assets as automatically published', async () => {
     vi.spyOn(atlasApi.imports, 'preview').mockResolvedValue({ data: { id: 'preview-real', rows: [{ rowNumber: 1, kind: 'SEGMENT', code: 'REF' }], areas: [], referenceFeatures: [], errors: [], status: 'PUBLISHED', datasetId: 'dataset-real' } })
@@ -314,6 +414,38 @@ describe('operational API interactions', () => {
     mount(<JobPanel id="foreign" onChange={() => {}} />, ['analysis.bulk'])
     expect(await screen.findByText(/Job berada di entitas lain/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Unduh hasil XLSX' })).toBeNull()
+  })
+  it('keeps job table mounted while progress refreshes rows in the background', async () => {
+    const state = { id: 'stable-job', entityId: alpha, type: 'ANALYSIS', status: 'RUNNING', total: 150, completed: 1, succeeded: 1, failed: 0, error: null, cancelRequestedAt: null }
+    vi.spyOn(atlasApi.jobs, 'get').mockResolvedValue({ data: state })
+    let refreshing = false
+    let finish: ((value: unknown) => void) | undefined
+    const data = { data: [{ id: 'stable-row', rowNumber: 2, referenceId: 'STABLE-REF', error: null, result: null }], meta: { page: 1, pageSize: 25, total: 150 } }
+    vi.spyOn(atlasApi.jobs, 'rows').mockImplementation(async () => refreshing ? await new Promise<unknown>((resolve) => { finish = resolve }) as never : data)
+    const client = mount(<JobPanel id="stable-job" onChange={() => {}} />, ['analysis.bulk'])
+    const cell = await screen.findByText('STABLE-REF')
+    refreshing = true
+    act(() => client.setQueryData(domainKey(alpha, 'alice', 'job', 'stable-job'), { data: { ...state, completed: 2, succeeded: 2 } }))
+    await waitFor(() => expect(finish).toBeTruthy())
+    expect(screen.getByText('STABLE-REF')).toBe(cell)
+    expect(screen.queryByText('Memuat data…')).toBeNull()
+    expect(screen.getByText('Memperbarui hasil di background…')).toBeTruthy()
+    await act(async () => finish!({ ...data, data: [{ ...data.data[0], result: { status: 'OK' } }] }))
+    expect(await screen.findByText('OK')).toBeTruthy()
+    expect(screen.getByText('STABLE-REF')).toBe(cell)
+  })
+  it('job table sends page size and resets the page on size change', async () => {
+    vi.spyOn(atlasApi.jobs, 'get').mockResolvedValue({ data: { id: 'paged-job', entityId: alpha, type: 'ANALYSIS', status: 'COMPLETED', total: 150, completed: 150, succeeded: 150, failed: 0, error: null, cancelRequestedAt: null } })
+    const rows = vi.spyOn(atlasApi.jobs, 'rows').mockImplementation(async (_id, page, _signal, pageSize=25) => ({ data: [{ id: `row-${page}`, rowNumber: page, referenceId: `PAGE-${page}`, error: null, result: { status: 'OK' } }], meta: { page, pageSize, total: 150 } }))
+    mount(<JobPanel id="paged-job" onChange={() => {}} />, ['analysis.bulk'])
+    await screen.findByText('PAGE-1')
+    await userEvent.click(screen.getByRole('button', { name: 'Halaman 2 hasil job' }))
+    await screen.findByText('PAGE-2')
+    await userEvent.selectOptions(screen.getByLabelText('Baris per halaman hasil job'), '50')
+    await waitFor(() => expect(rows).toHaveBeenLastCalledWith('paged-job', 1, expect.any(AbortSignal), 50))
+    expect(await screen.findByText('Halaman 1 dari 3 · 1–50 dari 150 data')).toBeTruthy()
+    await userEvent.click(screen.getByRole('button', { name: 'Terakhir' }))
+    await screen.findByText('PAGE-3')
   })
   it('loads every map feature across API pages', async () => {
     const map = vi.spyOn(atlasApi.network, 'map').mockImplementation(async (_entity, _bbox, _layers, page) => ({ data: { type: 'FeatureCollection', features: [{ type: 'Feature', id: `segments:${page}`, properties: { id: String(page), name: 'Synthetic fixture', layer: 'segments' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] } }] }, meta: { page, pageSize: 1000, total: 1001 } }))

@@ -3,6 +3,13 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { InternalAdapters } from '../dist/modules/analysis/internal-adapters.js'
 import { loadAppConfig } from '../dist/config/app-config.js'
+test('Compose empty optional geocoder values do not prevent API/worker startup', () => {
+  const config={ DATABASE_URL:'postgresql://atlas:secret@localhost:5432/atlas',BETTER_AUTH_SECRET:'x'.repeat(32),BETTER_AUTH_URL:'http://localhost:5173',PHOTON_INTERNAL_URL:'',GEOCODING_DATASET_VERSION:'' }
+  const parsed=loadAppConfig(config)
+  assert.equal(parsed.photonInternalUrl,undefined);assert.equal(parsed.geocodingDatasetVersion,undefined)
+  assert.equal(loadAppConfig({...config,GEOCODING_DATASET_VERSION:'photon-indonesia:sha256:test'}).geocodingDatasetVersion,'photon-indonesia:sha256:test')
+  assert.throws(()=>loadAppConfig({...config,GEOCODING_DATASET_VERSION:' '}))
+})
 test('approved internal adapters distinguish unavailable, missing, ambiguous and valid results',async () => {
   const server=createServer((req,res) => {
     const chunks=[]

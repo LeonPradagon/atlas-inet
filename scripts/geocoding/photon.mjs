@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import { isIP } from 'node:net'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
@@ -37,7 +38,13 @@ async function setup() {
     console.log('Existing Photon installation retained. No data was downloaded or overwritten.')
     return
   }
-  if (typeof zlib.createZstdDecompress !== 'function') throw new Error('Setup requires Node.js with createZstdDecompress (Node 24+ recommended)')
+  if (typeof zlib.createZstdDecompress !== 'function') {
+    await new Promise((resolve, reject) => {
+      const child = spawn('zstd', ['--version'], { stdio: 'ignore' })
+      child.once('error', () => reject(new Error('Setup requires Node 24+ or the zstd executable')))
+      child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('zstd is not available')))
+    })
+  }
   await java(['-version'], root)
   await mkdir(base, { recursive: true })
   // Photon import deletes the target index: only ever import into a NEW directory.
@@ -53,7 +60,17 @@ async function setup() {
   if (await hash(dump, 'md5') !== expectedMd5) throw new Error('Dump checksum mismatch; the upstream latest dump may have changed. No installation activated.')
   const dumpSha256 = await hash(dump, 'sha256')
   const jsonl = join(directory, 'indonesia.jsonl')
-  await pipeline(createReadStream(dump), zlib.createZstdDecompress(), createWriteStream(jsonl, { flags: 'wx' }))
+  if (typeof zlib.createZstdDecompress === 'function') {
+    await pipeline(createReadStream(dump), zlib.createZstdDecompress(), createWriteStream(jsonl, { flags: 'wx' }))
+  } else {
+    const child = spawn('zstd', ['-d', '-c', dump], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const finished = new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`zstd exited: ${code}`)))
+    })
+    try { await Promise.all([pipeline(child.stdout, createWriteStream(jsonl, { flags: 'wx' })), finished]) }
+    catch (error) { child.kill(); throw error }
+  }
   await java(['-Xms256m', '-Xmx1g', '-jar', jar, 'import', '-import-file', jsonl, '-country-codes', 'ID'], directory)
   if (!await exists(join(directory, 'photon_data'))) throw new Error('Photon import did not produce a database')
   const manifest = { version: '1.3.0', directory, jar, dumpUrl, dumpSha256, datasetVersion: `photon-indonesia:sha256:${dumpSha256}`, importedAt: new Date().toISOString() }
@@ -67,9 +84,11 @@ async function setup() {
 async function start() {
   if (!await exists(activeFile)) throw new Error('Run npm run geocoding:setup first')
   const manifest = JSON.parse(await readFile(activeFile, 'utf8'))
-  const response = await fetch('http://127.0.0.1:2322/status', { signal: AbortSignal.timeout(1000) }).catch(() => null)
+  const bind = process.env.PHOTON_BIND_IP || '127.0.0.1'
+  if (bind !== '127.0.0.1' && !(isIP(bind) === 4 && /^172\.(1[6-9]|2\d|3[01])\./.test(bind))) throw new Error('Photon must bind loopback or a private Docker bridge address, never a public interface')
+  const response = await fetch(`http://${bind}:2322/status`, { signal: AbortSignal.timeout(1000) }).catch(() => null)
   if (response) throw new Error('Port 2322 is already responding; refusing to start another service')
-  await java(['-Xms256m', '-Xmx1g', '-jar', manifest.jar, 'serve', '-listen-ip', '127.0.0.1', '-listen-port', '2322', '-max-results', '5'], manifest.directory)
+  await java(['-Xms256m', '-Xmx1g', '-jar', manifest.jar, 'serve', '-listen-ip', bind, '-listen-port', '2322', '-max-results', '5'], manifest.directory)
 }
 try {
   if (process.argv[2] === 'setup') await setup()

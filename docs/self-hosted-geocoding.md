@@ -10,7 +10,7 @@ Versi sumber lokal: `photon-indonesia:sha256:9cda1074875700354e2a099d1d84da670c8
 
 ## Menjalankan lokal
 
-Prasyarat: Java 21+, Node.js dengan `createZstdDecompress` (Node 24+ direkomendasikan), internet saat setup, disk untuk JAR/dump/JSONL/index. Teruji pada Java 26/Node 26. Heap Photon **1 GB**, bukan batas seluruh penggunaan RAM. Ini sizing pengembangan, belum load-test produksi. Import lokal sempat menerima 429 internal OpenSearch dan berhasil setelah retry.
+Prasyarat: Java 21+, Node.js dengan `createZstdDecompress` (Node 24+ direkomendasikan) atau Node 22 dengan executable `zstd`, internet saat setup, disk untuk JAR/dump/JSONL/index. Teruji lokal pada Java 26/Node 26. Heap Photon **1 GB**, bukan batas seluruh penggunaan RAM. Ini sizing pengembangan, belum load-test produksi. Import lokal sempat menerima 429 internal OpenSearch dan berhasil setelah retry.
 
 Dari root repository:
 
@@ -45,12 +45,16 @@ Watch Nest membersihkan `dist` saat startup. Worker yang dimulai bersamaan dapat
 
 Health: `http://127.0.0.1:2322/status`. Photon bind loopback 2322; OpenSearch embedded harus tetap loopback 9201/9300. Jangan expose index/OpenSearch ke LAN/internet. Produksi multi-host, firewall/TLS, supervision, sizing, backup dan retensi log belum ditetapkan. Geocoder belum menjadi service Compose; `127.0.0.1` dari container bukan host Windows.
 
+### Backend Docker pada server Linux
+
+Compose meneruskan `PHOTON_INTERNAL_URL` dan `GEOCODING_DATASET_VERSION` ke API dan worker. Unit opsional `scripts/geocoding/atlas-photon.service` menjalankan geocoder sebagai user OS khusus `atlas-geocoder` dengan data hanya dapat ditulis di `/opt/atlas-inet/var/geocoding`. Pastikan Java tersedia dan data/index dimiliki user tersebut. `PHOTON_BIND_IP=172.18.0.1` harus cocok dengan gateway jaringan Docker yang sebenarnya; bind publik/`0.0.0.0` ditolak. API/worker menggunakan `http://host.docker.internal:2322`; health geocoder pada host menggunakan alamat bridge tersebut. Port 2322 tidak dipublish ke internet. Ini bukan provisioning multi-host atau klaim SLA produksi.
+
 ## Pemakaian
 
 1. Login, pilih entitas berizin, buka **Analisis**, pilih **Alamat**, isi alamat lengkap. Native query dibatasi Indonesia/maksimal 5 kandidat; timeout 5 detik, response 1 MB, redirect ditolak.
 2. Kandidat ambigu atau satu titik tanpa house number tetap memerlukan konfirmasi. Tidak diam-diam memakai titik kota/jalan sebagai alamat tepat. Photon tidak memiliki confidence score terkalibrasi. Label/precision bukan sertifikasi lokasi; `needsSurvey` selalu true.
-3. **Bulk**: unggah KML/KMZ dengan satu Point atau address-only Placemark per lokasi. `ExtendedData` dapat menyediakan `reference_id`, `customer_name`, `address`, `notes`, optional UUID `connection_point_id` bersama `connection_point_type` (`ODC`/`ODP`). Point bypass geocoding; alamat saja diproses melalui provider internal.
-4. Setujui proses setelah preview. Download Results/Errors/Summary sebagai XLSX memuat koordinat hasil, provider/versi, kandidat ambigu, status rute dan estimasi yang tersedia. Kandidat alamat ambigu dapat diverifikasi lalu dikirim ulang sebagai Placemark Point berkoordinat eksplisit di KML/KMZ baru.
+3. **Bulk**: Excel `.xlsx` memakai sheet `Input` dari tombol **Unduh template Excel**, maksimal 50.000 baris/50 MB; isi alamat atau pasangan latitude/longitude. Batas keamanan ZIP tetap berlaku. KML/KMZ tetap tersedia (20 MB / 20.000 Placemark) dengan satu Point atau address-only Placemark per lokasi. Kolom Excel/`ExtendedData` dapat menyediakan `reference_id`, `customer_name`, `address`, `notes`, optional UUID `connection_point_id` bersama `connection_point_type` (`ODC`/`ODP`). Koordinat bypass geocoding; alamat saja diproses melalui provider internal.
+4. Setujui proses setelah preview. Download Results/Errors/Summary sebagai XLSX memuat koordinat hasil, provider/versi, kandidat ambigu, status rute dan estimasi yang tersedia. Kandidat alamat ambigu dapat diverifikasi lalu dikirim ulang dengan koordinat eksplisit di Excel atau KML/KMZ baru.
 5. **Import aset titik**: sheet `Assets`, NODE/POLE/ODC/ODP boleh memakai `address` tanpa geometry. Klik **Cari koordinat** per baris lalu **Konfirmasi kandidat**. Lookup sendiri belum menyelesaikan row/publish. Lookup stale/index invalid ditolak. POLE tetap wajib tinggi 7/9 m. Error UI dipaginasi 25 baris/halaman.
 6. KML tanpa geometry boleh memakai `<address>` dengan kind/ID/code eksplisit; mapping kind tetap wajib. Geometry/koordinat existing tidak di-geocode. Geometry invalid tidak diganti diam-diam lewat alamat.
 

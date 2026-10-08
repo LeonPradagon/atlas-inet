@@ -28,6 +28,15 @@ describe('central API contracts', () => {
     await atlasApi.network.search('alpha', 'ODP-12', signal)
     expect(adapter.mock.calls[0][0]).toMatchObject({ url: API_ENDPOINTS.networkSearch, params: { entityId: 'alpha', q: 'ODP-12', limit: 15 }, signal, withCredentials: true })
   })
+  it('sends the chosen table size for job rows and analysis history', async () => {
+    const adapter = vi.fn<AxiosAdapter>(async (config) => ({ config, data: { data: [] }, status: 200, statusText: 'OK', headers: {} }))
+    axiosClient.defaults.adapter = adapter
+    const signal = new AbortController().signal
+    await atlasApi.jobs.rows('job-real', 3, signal, 50)
+    expect(adapter.mock.calls[0][0]).toMatchObject({ url: `${API_ENDPOINTS.jobs}/job-real/rows`, params: { page: 3, pageSize: 50 }, signal })
+    await atlasApi.analysis.history('alpha', 2, signal, 100)
+    expect(adapter.mock.calls[1][0]).toMatchObject({ url: API_ENDPOINTS.analysis, params: { entityId: 'alpha', page: 2, pageSize: 100 }, signal })
+  })
   it('multipart upload preserves file and approval is explicit', async () => {
     const adapter = vi.fn<AxiosAdapter>(async (config) => ({ config, data: { data: { id: 'real' } }, status: 201, statusText: 'Created', headers: {} }))
     axiosClient.defaults.adapter = adapter
@@ -39,6 +48,11 @@ describe('central API contracts', () => {
     expect(form.get('file')).toBe(file)
     await atlasApi.analysis.submit('upload-real')
     expect(JSON.parse(adapter.mock.calls[1][0].data)).toEqual({ uploadId: 'upload-real', processValidRows: true })
+    const excel = new File(['workbook'], 'input.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    await atlasApi.analysis.upload('alpha', excel)
+    expect(adapter.mock.calls[2][0].url).toBe(`${API_ENDPOINTS.analysis}/uploads`)
+    expect((adapter.mock.calls[2][0].data as FormData).get('file')).toBe(excel)
+    expect((adapter.mock.calls[2][0].data as FormData).get('entityId')).toBe('alpha')
   })
   it('normalizes backend errors and dispatches session expiry only for private 401', async () => {
     const event = vi.fn()

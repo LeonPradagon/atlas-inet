@@ -34,7 +34,7 @@ const AppConfigSchema = z.object({
   GEOCODING_INTERNAL_URL: internalUrlSchema,
   PHOTON_INTERNAL_URL: internalUrlSchema,
   PHOTON_PUBLIC_DEV_URL: photonPublicDevUrlSchema,
-  GEOCODING_DATASET_VERSION: z.string().trim().min(1).max(200).optional(),
+  GEOCODING_DATASET_VERSION: z.preprocess((value) => value === '' ? undefined : value, z.string().trim().min(1).max(200).optional()),
   ROUTING_INTERNAL_URL: internalUrlSchema,
   WORKER_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1000),
 }).refine((env) => {

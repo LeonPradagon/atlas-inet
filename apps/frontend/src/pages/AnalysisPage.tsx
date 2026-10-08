@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { atlasApi } from "../shared/api";
 import { domainKey, useEntityScope } from "../shared/EntityScope";
 import { ContentCard } from "../components/ContentCard";
@@ -7,6 +7,7 @@ import { dateLabel, Field, MutationStatus, numberLabel, Pagination, QueryState, 
 import { JobPanel } from "../components/JobPanel";
 import { SegmentDetail } from "../components/SegmentTools";
 import { NetworkMapCanvas, type NetworkMapFeature } from "../components/NetworkMapCanvas";
+import type { UploadPreview } from '../shared/domain-types';
 
 export function AnalysisPage() {
   const { entity, can } = useEntityScope();
@@ -16,20 +17,16 @@ export function AnalysisPage() {
     [longitude, setLongitude] = useState("");
   const [file, setFile] = useState<File | null>(null),
     [jobId, setJobId] = useState("");
+  const maxFileSize = /\.xlsx$/i.test(file?.name ?? '') ? 50 * 1024 * 1024 : 20 * 1024 * 1024;
   const analysis = useDomainMutation((input: Parameters<typeof atlasApi.analysis.run>[0]) => atlasApi.analysis.run(input));
   const upload = useDomainMutation(() => atlasApi.analysis.upload(entity!.id, file!));
+  const template = useDomainMutation(() => atlasApi.analysis.template(entity!.id));
   const submit = useDomainMutation(() => atlasApi.analysis.submit(upload.data!.data.id));
   const result = analysis.data?.data;
   const features: NetworkMapFeature[] = [];
   if (result?.coordinates)
     features.push({ type: "Feature", geometry: { type: "Point", coordinates: [result.coordinates.longitude, result.coordinates.latitude] }, properties: { id: "analysis-input", name: "Lokasi input", layer: "analysis" } });
   if (result?.route?.geometry) features.push({ type: "Feature", geometry: result.route.geometry, properties: { id: "analysis-route", name: "Estimasi rute jalan", layer: "segments" } });
-  const bulkFeatures: NetworkMapFeature[] = (upload.data?.data.preview ?? []).flatMap((row) => {
-    const latitude = row.input?.latitude,
-      longitude = row.input?.longitude;
-    if (row.error || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
-    return [{ type: "Feature", geometry: { type: "Point", coordinates: [longitude!, latitude!] }, properties: { id: `bulk-${row.rowNumber}`, name: row.referenceId, layer: "analysis" } }];
-  });
   function run(overrides?: { latitude: number; longitude: number; connectionPointId?: string; connectionPointType?: 'ODC' | 'ODP' }) {
     analysis.mutate({
       entityId: entity!.id,
@@ -72,10 +69,10 @@ export function AnalysisPage() {
                     <>
                       <div className="row">
                         <div className="col-sm-6">
-                          <Field name="latitude" label="Lintang" value={latitude} onChange={setLatitude} type="number" min={-90} max={90} step="any" />
+                           <Field name="latitude" label="Lintang" value={latitude} onChange={setLatitude} type="number" min={-90} max={90} step="any" required />
                         </div>
                         <div className="col-sm-6">
-                          <Field name="longitude" label="Bujur" value={longitude} onChange={setLongitude} type="number" min={-180} max={180} step="any" />
+                           <Field name="longitude" label="Bujur" value={longitude} onChange={setLongitude} type="number" min={-180} max={180} step="any" required />
                         </div>
                       </div>
                       <p className="form-text">Contoh Jakarta: lintang -6.2, bujur 106.8.</p>
@@ -189,15 +186,17 @@ export function AnalysisPage() {
       {result?.nearest && can("network.read") && <SegmentDetail id={result.nearest.segmentId} />}
       {can("analysis.bulk") && (
         <>
-          <ContentCard title="3. Analisis banyak lokasi · KML/KMZ">
+          <ContentCard title="3. Analisis banyak lokasi · Excel / KML / KMZ">
             <ol>
-              <li>Siapkan KML/KMZ berisi satu Point Placemark untuk tiap lokasi; koordinat KML memakai urutan longitude,latitude.</li>
+              <li>Excel: unduh template, isi sheet Input dengan alamat atau pasangan latitude/longitude. Maksimal 50.000 baris / 50 MB.</li>
+              <li>KML/KMZ: satu Point atau address-only Placemark per lokasi, maksimal 20.000 Placemark; koordinat KML memakai urutan longitude,latitude.</li>
               <li>Unggah untuk memvalidasi dan melihat marker pada peta.</li>
               <li>Setujui pemrosesan; pantau job lalu unduh hasil XLSX.</li>
             </ol>
+            <button className="btn btn-outline-primary mb-3" type="button" disabled={template.isPending} onClick={() => template.mutate()}>Unduh template Excel</button>
+            <MutationStatus mutation={template} />
             <p className="small">
-              Baris non-Point ditandai error dan tidak dianalisis. KML aset FTTH (ODC/ODP/tiang/kabel) diimpor melalui Aset & Impor Jaringan, bukan sebagai lokasi customer. Untuk rute kabel, ExtendedData dapat memuat connection_point_id dan
-              connection_point_type (ODC/ODP) bersama-sama.
+              Excel menggunakan header reference_id, customer_name, address, latitude, longitude, notes, connection_point_id, connection_point_type. Isi alamat atau kedua koordinat; formula tidak diterima. KML aset FTTH diimpor melalui Aset & Impor Jaringan. Untuk rute kabel, isi connection_point_id dan connection_point_type (ODC/ODP) bersama-sama di Excel atau ExtendedData KML.
             </p>
             <form
               onSubmit={(event) => {
@@ -206,13 +205,13 @@ export function AnalysisPage() {
               }}
             >
               <label htmlFor="bulk-file" className="form-label">
-                File .kml / .kmz · maksimal 20 MB / 20.000 Placemark
+                File .xlsx / .kml / .kmz · Excel maksimal 50 MB, KML/KMZ 20 MB
               </label>
               <input
                 id="bulk-file"
                 className="form-control mb-3"
                 type="file"
-                accept=".kml,.kmz"
+                accept=".xlsx,.kml,.kmz"
                 required
                 disabled={upload.isPending || submit.isPending}
                 onChange={(event) => {
@@ -221,35 +220,15 @@ export function AnalysisPage() {
                   submit.reset();
                 }}
               />
-              <button className="btn btn-primary" disabled={!file || file.size > 20 * 1024 * 1024 || upload.isPending || submit.isPending}>
+              {file && file.size > maxFileSize && <p className="text-danger" role="alert">File melebihi batas {maxFileSize / 1024 / 1024} MB. Pilih file yang lebih kecil.</p>}
+              <button className="btn btn-primary" disabled={!file || file.size > maxFileSize || upload.isPending || submit.isPending}>
                 Upload dan preview
               </button>
             </form>
             <MutationStatus mutation={upload} />
             {upload.data && (
               <>
-                <p>Total {upload.data.meta?.total} Placemark. Preview maksimal 100; marker yang valid ditampilkan di peta.</p>
-                {bulkFeatures.length > 0 && <NetworkMapCanvas features={bulkFeatures} visibleLayers={{ analysis: true }} style="liberty" />}
-                <div className="table-responsive">
-                  <table className="table table-sm">
-                    <thead>
-                      <tr>
-                        <th>Baris</th>
-                        <th>Reference</th>
-                        <th>Validasi</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {upload.data.data.preview.map((row) => (
-                        <tr key={row.rowNumber}>
-                          <td>{row.rowNumber}</td>
-                          <td>{row.referenceId}</td>
-                          <td>{row.error ?? "Valid"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <BulkPreview key={upload.data.data.id} upload={upload.data.data} total={upload.data.meta?.total ?? upload.data.data.preview.length} />
                 <button
                   className="btn btn-primary"
                   disabled={upload.isPending || submit.isPending || submit.isSuccess || !can("analysis.create")}
@@ -268,6 +247,39 @@ export function AnalysisPage() {
     </>
   );
 }
+function BulkPreview({ upload, total }: { upload: UploadPreview; total: number }) {
+  const { entity, user } = useEntityScope();
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const paged = total > upload.preview.length;
+  const rowsQuery = useInfiniteQuery({
+    queryKey: domainKey(entity?.id, user?.id, 'analysis-upload-rows', upload.id),
+    initialPageParam: 1,
+    queryFn: ({ pageParam, signal }) => atlasApi.analysis.uploadRows(upload.id, pageParam, signal),
+    getNextPageParam: (last) => last.meta && last.meta.page * last.meta.pageSize < last.meta.total ? last.meta.page + 1 : undefined,
+    enabled: paged, staleTime: Infinity,
+  });
+  const { hasNextPage, isFetching, isError, fetchNextPage } = rowsQuery;
+  useEffect(() => {
+    if (paged && hasNextPage && !isFetching && !isError) void fetchNextPage();
+  }, [paged, hasNextPage, isFetching, isError, fetchNextPage]);
+  const rows = useMemo(() => rowsQuery.data?.pages.flatMap((part) => part.data) ?? upload.preview, [rowsQuery.data, upload.preview]);
+  const features = useMemo<NetworkMapFeature[]>(() => rows.flatMap((row) => {
+    const latitude = row.input?.latitude, longitude = row.input?.longitude;
+    if (row.error || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+    return [{ type: 'Feature', geometry: { type: 'Point', coordinates: [longitude!, latitude!] }, properties: { id: `bulk-${row.rowNumber}`, name: row.referenceId, layer: 'analysis' } }];
+  }), [rows]);
+  return <>
+    <p>Total {total} baris/lokasi. Dimuat {rows.length} dari {total}; {features.length} lokasi valid berkoordinat ditampilkan di peta. Alamat tanpa koordinat diproses setelah persetujuan.</p>
+    {paged && isFetching && <p role="status">Memuat seluruh lokasi secara bertahap…</p>}
+    {paged && isError && <div role="alert" className="alert alert-danger">Sebagian preview belum dimuat. <button type="button" onClick={() => void (rowsQuery.hasNextPage ? rowsQuery.fetchNextPage() : rowsQuery.refetch())}>Coba lagi</button></div>}
+    {features.length > 0 && <NetworkMapCanvas features={features} visibleLayers={{ analysis: true }} style="liberty" />}
+    <div className="table-responsive"><table className="table table-sm"><thead><tr><th>Baris</th><th>Reference</th><th>Validasi</th></tr></thead>
+      <tbody>{rows.slice((page - 1) * pageSize, page * pageSize).map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.referenceId}</td><td>{row.error ?? 'Valid'}</td></tr>)}</tbody>
+    </table></div>
+    <Pagination page={page} meta={{ page, pageSize, total: rows.length }} setPage={setPage} setPageSize={setPageSize} label="preview analisis" />
+  </>;
+}
 function routeStatusLabel(status: string) {
   const labels: Record<string, string> = {
     ROAD_ROUTE_ESTIMATE: "Rute berhasil ditemukan",
@@ -282,7 +294,8 @@ function routeStatusLabel(status: string) {
 function AnalysisHistoryPanel() {
   const { entity, user } = useEntityScope();
   const [page, setPage] = useState(1);
-  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, "analysis-history", page), queryFn: ({ signal }) => atlasApi.analysis.history(entity!.id, page, signal) });
+  const [pageSize, setPageSize] = useState(25);
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, "analysis-history", page, pageSize), queryFn: ({ signal }) => atlasApi.analysis.history(entity!.id, page, signal, pageSize) });
   return (
     <ContentCard title="Histori analisis Anda">
       <QueryState query={query} empty={query.data?.data.length === 0}>
@@ -318,7 +331,7 @@ function AnalysisHistoryPanel() {
           </table>
         </div>
       </QueryState>
-      <Pagination page={page} meta={query.data?.meta} setPage={setPage} />
+      <Pagination page={page} meta={query.data?.meta} setPage={setPage} setPageSize={setPageSize} label="histori analisis" />
     </ContentCard>
   );
 }

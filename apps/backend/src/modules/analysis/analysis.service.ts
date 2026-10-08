@@ -66,7 +66,6 @@ export class AnalysisService {
           const accepted = route && policy.maxDetourPercent !== null && detourPercent !== null && detourPercent<=policy.maxDetourPercent
           result.route = accepted ? route : null
           result.routeStatus = route ? 'ROAD_ROUTE_ESTIMATE' : 'ROUTING_NOT_AVAILABLE'
-          result.connectionPointType = points.rows[0].type
           if (route && !accepted) result.routeStatus = 'ROUTE_POLICY_NOT_MET_OR_UNCONFIGURED'
           if (accepted) {
             result.estimationMethod = 'ROAD_ROUTE_ESTIMATE'

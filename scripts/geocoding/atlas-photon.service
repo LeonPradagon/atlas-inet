@@ -1,0 +1,22 @@
+[Unit]
+Description=ATLAS internal Indonesia geocoder
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atlas-geocoder
+Group=atlas-geocoder
+WorkingDirectory=/opt/atlas-inet
+Environment=PHOTON_BIND_IP=172.18.0.1
+ExecStart=/usr/bin/node /opt/atlas-inet/scripts/geocoding/photon.mjs start
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/atlas-inet/var/geocoding
+
+[Install]
+WantedBy=multi-user.target

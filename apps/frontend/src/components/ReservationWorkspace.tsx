@@ -37,7 +37,7 @@ export function ReservationWorkspace({ waiting = false }: { waiting?: boolean })
     const form = event.currentTarget
     const fields = new FormData(form)
     const text = (key: string) => String(fields.get(key) ?? '').trim()
-    const input: CustomerInput = { segmentId, presalesUserId: user?.id ?? '', coreCount: Number(fields.get('coreCount')), customerName: text('customerName'), customerPicName: text('customerPicName'), customerPicContact: text('customerPicContact'), reason: text('reason'), ...(text('customerReference') ? { customerReference: text('customerReference') } : {}) }
+    const input: CustomerInput = { segmentId, presalesUserId: presales, coreCount: Number(fields.get('coreCount')), customerName: text('customerName'), customerPicName: text('customerPicName'), customerPicContact: text('customerPicContact'), reason: text('reason'), ...(text('customerReference') ? { customerReference: text('customerReference') } : {}) }
     create.mutate(input, { onSuccess: (response) => { setReceipt(response.data.id); form.reset() } })
   }
   return <>

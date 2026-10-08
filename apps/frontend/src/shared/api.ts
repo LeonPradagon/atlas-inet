@@ -140,10 +140,12 @@ export const atlasApi = {
     cancelWaiting: (id: string, reason: string) => post(`${API_ENDPOINTS.waitingList}/${encodeURIComponent(id)}/cancel`, { reason }),
   },
   analysis: {
-    history: (entityId: string, page: number, signal?: AbortSignal) => get<AnalysisHistory[]>(API_ENDPOINTS.analysis, { entityId, page }, signal),
+    template: (entityId: string) => downloadFile(`${API_ENDPOINTS.analysis}/template?entityId=${encodeURIComponent(entityId)}`, 'atlas-analysis-template.xlsx'),
+    history: (entityId: string, page: number, signal?: AbortSignal, pageSize = 25) => get<AnalysisHistory[]>(API_ENDPOINTS.analysis, { entityId, page, pageSize }, signal),
     run: (input: { entityId: string; address?: string; latitude?: number; longitude?: number; connectionPointId?: string; connectionPointType?: 'ODC' | 'ODP' }) => post<AnalysisResult>(API_ENDPOINTS.analysis, input),
     upload: (entityId: string, file: File) => { const form = new FormData(); form.set('entityId', entityId); form.set('file', file); return post<UploadPreview>(`${API_ENDPOINTS.analysis}/uploads`, form) },
     submit: (uploadId: string) => post<{ id: string }>(`${API_ENDPOINTS.analysis}/jobs`, { uploadId, processValidRows: true }),
+    uploadRows: (id: string, page: number, signal?: AbortSignal) => get<UploadPreview['preview']>(`${API_ENDPOINTS.analysis}/uploads/${encodeURIComponent(id)}/rows`, { page, pageSize: 1000 }, signal),
   },
   imports: {
     list: (entityId: string, page: number, signal?: AbortSignal) => get<ImportPreviewSummary[]>(API_ENDPOINTS.imports, { entityId, page }, signal),
@@ -157,7 +159,7 @@ export const atlasApi = {
   },
   jobs: {
     get: (id: string, signal?: AbortSignal) => get<Job>(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}`, undefined, signal),
-    rows: (id: string, page: number, signal?: AbortSignal) => get<JobRow[]>(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}/rows`, { page }, signal),
+    rows: (id: string, page: number, signal?: AbortSignal, pageSize = 25) => get<JobRow[]>(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}/rows`, { page, pageSize }, signal),
     cancel: (id: string) => post(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}/cancel`),
     retry: (id: string) => post<{ id: string }>(`${API_ENDPOINTS.jobs}/${encodeURIComponent(id)}/retry`),
   },

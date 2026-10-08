@@ -4,9 +4,9 @@ import { DatabaseService } from '../../database/database.service.js'
 import type { Transaction } from '../../database/transaction.js'
 import { analysisUploads, auditLogs, jobRows, jobs } from '../../database/schema/index.js'
 import { AccessService } from '../access/access.service.js'
-import { spreadsheet, type UploadFile } from '../files/tabular-files.js'
+import { analysisExcelRowLimit, analysisUploadLimits, spreadsheet, type UploadFile } from '../files/tabular-files.js'
 import { utilization } from '../reports/reports.service.js'
-import { parseBulkFile } from './bulk-parser.js'
+import { bulkInputColumns, parseBulkFile } from './bulk-parser.js'
 
 export type Job = typeof jobs.$inferSelect
 export const jobPermission = (job: Pick<Job, 'type'>) => job.type === 'ANALYSIS' ? 'analysis.bulk' : 'reports.export'
@@ -15,6 +15,21 @@ export const transientCodes = ['GEOCODING_UNAVAILABLE','DEPENDENCY_UNAVAILABLE']
 @Injectable()
 export class JobsService {
   constructor(private readonly database: DatabaseService, private readonly access: AccessService) {}
+  async template(userId: string, entityId: string) {
+    await this.access.requireEntityPermission(userId, entityId, 'analysis.bulk')
+    return spreadsheet([
+      { name: 'Input', columns: bulkInputColumns, rows: [] },
+      { name: 'Instructions', columns: ['field', 'description'], rows: [
+        { field: 'Input', description: `Isi sheet Input; maksimal ${analysisExcelRowLimit.toLocaleString('id-ID')} baris dan ${analysisUploadLimits.fileSize / 1024 / 1024} MB. Header tidak boleh diubah. Jangan gunakan formula atau hyperlink.` },
+        { field: 'reference_id', description: 'Opsional, unik per file. Jika kosong, nomor baris Excel digunakan.' },
+        { field: 'address', description: 'Alamat lengkap, wajib jika koordinat tidak tersedia. Alamat ambigu memerlukan verifikasi; kandidat muncul di hasil export.' },
+        { field: 'latitude / longitude', description: 'Isi keduanya dengan angka WGS84 (contoh -6.2 / 106.8), atau kosongkan keduanya. Koordinat yang diisi selalu diprioritaskan.' },
+        { field: 'customer_name / notes', description: 'Metadata opsional; tidak dikirim ke provider geocoding.' },
+        { field: 'connection_point_id / connection_point_type', description: 'Opsional; isi keduanya: UUID titik sambung dan ODC atau ODP. Titik harus terhubung ke segmen terdekat.' },
+        { field: 'Estimasi kabel', description: 'Memerlukan titik sambung tervalidasi, routing internal, dan policy engineering yang disetujui. Jarak geometris bukan panjang kabel.' },
+      ] },
+    ])
+  }
   async upload(userId: string, entityId: string, file: UploadFile) {
     await this.access.requireEntityPermission(userId, entityId, 'analysis.bulk')
     const rows = await parseBulkFile(file, entityId)
@@ -30,6 +45,17 @@ export class JobsService {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId + ':job-quota'},0))`)
     const [{ count }] = await tx.select({ count: sql<number>`count(*)::int` }).from(jobs).where(and(eq(jobs.ownerId,userId),inArray(jobs.status,['QUEUED','RUNNING'])))
     if (count >= 2) throw new HttpException('At most two active jobs per user',429)
+  }
+  async uploadRows(userId: string, id: string, page: number, pageSize: number) {
+    const [upload] = await this.database.db.select({ entityId: analysisUploads.entityId, total: sql<number>`jsonb_array_length(${analysisUploads.rows})` })
+      .from(analysisUploads).where(and(eq(analysisUploads.id, id), eq(analysisUploads.ownerId, userId)))
+    if (!upload) throw new NotFoundException('Upload not found')
+    await this.access.requireEntityPermission(userId, upload.entityId, 'analysis.bulk')
+    const result = await this.database.db.execute<{ value: { rowNumber: number; referenceId: string; error: string | null; input: Record<string, unknown> } }>(sql`
+      SELECT item.value FROM analysis_uploads u, jsonb_array_elements(u.rows) WITH ORDINALITY AS item(value, position)
+      WHERE u.id = ${id}::uuid AND u.owner_id = ${userId}
+      ORDER BY item.position LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`)
+    return { data: result.rows.map((row) => row.value), meta: { page, pageSize, total: upload.total } }
   }
   async submit(userId: string, uploadId: string, processValidRows: boolean) {
     const [upload] = await this.database.db.select().from(analysisUploads).where(and(eq(analysisUploads.id,uploadId),eq(analysisUploads.ownerId,userId)))
@@ -118,6 +144,7 @@ export class JobsService {
       const coordinates = result.coordinates as Record<string,unknown> | null
       return { row_number:row.rowNumber,reference_id:row.referenceId,...row.input,latitude:coordinates?.latitude ?? row.input.latitude,longitude:coordinates?.longitude ?? row.input.longitude,
         status:result.status,segment_id:nearest?.segmentId,cable_name:nearest?.cableName,nearest_distance_m:result.nearestNetworkDistanceM,estimated_cable_length_m:result.estimatedCableLengthM,estimation_method:result.estimationMethod,dataset_version:nearest?.datasetVersion,analysis_time:result.analysisTime,error:row.error,
+        connection_point_id:result.connectionPointId ?? row.input.connection_point_id,connection_point_type:result.connectionPointType ?? row.input.connection_point_type,
         coordinate_source:result.coordinateSource,geocoding_provider:result.geocodingProvider ?? result.provider,geocoding_dataset_version:result.geocodingDatasetVersion ?? result.datasetVersion,
         geocoding_candidates:result.candidates ? JSON.stringify(result.candidates) : '',route_status:result.routeStatus,route_distance_m:(result.route as Record<string,unknown> | null)?.distanceM,formula_version:result.formulaVersion,needs_survey:result.needsSurvey }
     })

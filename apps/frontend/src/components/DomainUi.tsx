@@ -11,9 +11,17 @@ export function QueryState({ query, empty, emptyMessage = 'Belum ada data pada l
   return children
 }
 export function PermissionNotice() { return <div className="alert alert-warning" role="status">Akun belum memiliki akses ke entitas atau izin fitur ini. Hubungi administrator.</div> }
-export function Pagination({ page, meta, setPage }: { page: number; meta?: PageMeta; setPage: (page: number) => void }) {
+export function Pagination({ page, meta, setPage, setPageSize, label = 'tabel', busy = false }: { page: number; meta?: PageMeta; setPage: (page: number) => void; setPageSize?: (size: number) => void; label?: string; busy?: boolean }) {
   if (!meta) return null
-  return <div className="d-flex align-items-center justify-content-between mt-3 gap-2"><span className="small">Halaman {page} · {meta.total} data</span><div className="btn-group"><button className="btn btn-outline-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(page - 1)}>Sebelumnya</button><button className="btn btn-outline-secondary btn-sm" disabled={page * meta.pageSize >= meta.total} onClick={() => setPage(page + 1)}>Berikutnya</button></div></div>
+  const pages = Math.max(1, Math.ceil(meta.total / meta.pageSize))
+  const start = Math.max(1, Math.min(page - 2, pages - 4))
+  return <nav aria-label={`Pagination ${label}`} className="d-flex flex-wrap align-items-center justify-content-between mt-3 gap-2">
+    <span className="small">Halaman {page} dari {pages} · {meta.total ? (page - 1) * meta.pageSize + 1 : 0}–{Math.min(page * meta.pageSize, meta.total)} dari {meta.total} data</span>
+    {setPageSize && <label className="small d-flex align-items-center gap-2">Tampilkan <select className="form-select form-select-sm" aria-label={`Baris per halaman ${label}`} value={meta.pageSize} onChange={(event) => { setPage(1); setPageSize(Number(event.target.value)) }} disabled={busy}>{[10,25,50,100].map((size) => <option key={size} value={size}>{size}</option>)}</select> baris</label>}
+    <div className="btn-group"><button type="button" className="btn btn-outline-secondary btn-sm" disabled={busy || page <= 1} onClick={() => setPage(1)}>Pertama</button><button type="button" className="btn btn-outline-secondary btn-sm" disabled={busy || page <= 1} onClick={() => setPage(page - 1)}>Sebelumnya</button>
+      {Array.from({length: Math.min(5, pages)}, (_, index) => start + index).map((value) => <button type="button" key={value} className={`btn btn-sm ${value === page ? 'btn-primary' : 'btn-outline-secondary'}`} aria-label={`Halaman ${value} ${label}`} aria-current={value === page ? 'page' : undefined} disabled={busy} onClick={() => setPage(value)}>{value}</button>)}
+      <button type="button" className="btn btn-outline-secondary btn-sm" disabled={busy || page >= pages} onClick={() => setPage(page + 1)}>Berikutnya</button><button type="button" className="btn btn-outline-secondary btn-sm" disabled={busy || page >= pages} onClick={() => setPage(pages)}>Terakhir</button></div>
+  </nav>
 }
 export function useDomainMutation<T, R>(fn: (input: T) => Promise<R>) {
   const { entity, user } = useEntityScope()
