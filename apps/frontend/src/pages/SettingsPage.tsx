@@ -53,8 +53,8 @@ function PolicyEditor<T>({ policyKey, initial, version, fields }: { policyKey: s
 const policyLabels: Record<string, string> = { 'booking-policy': 'Masa berlaku booking', 'naming-policy': 'Standar nama kabel', 'analysis-policy': 'Radius / formula engineering' }
 function PolicyRequestsPanel() {
   const { entity, user, can } = useEntityScope()
-  const [page, setPage] = useState(1), [status, setStatus] = useState('PENDING')
-  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'policy-requests', page, status), queryFn: ({ signal }) => atlasApi.settings.requests(entity!.id, page, status, signal), enabled: Boolean(entity) && can('settings.read') })
+  const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [status, setStatus] = useState('PENDING')
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'policy-requests', page, pageSize, status), queryFn: ({ signal }) => atlasApi.settings.requests(entity!.id, page, status, signal, pageSize), enabled: Boolean(entity) && can('settings.read') })
   return <ContentCard title="Pengajuan dan histori approval" tools={<select className="form-select form-select-sm" aria-label="Filter status approval" value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}><option value="">Semua status</option>{['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'].map((value) => <option key={value}>{value}</option>)}</select>}>
     <QueryState query={query} empty={query.data?.data.length === 0}><div className="table-responsive"><table className="table align-middle"><thead><tr><th>Kebijakan / pengajuan</th><th>Perubahan</th><th>Status / aksi</th></tr></thead><tbody>{query.data?.data.map((row) => <tr key={row.id}>
       <td>{policyLabels[row.key] ?? row.key}<br /><small>Base versi {row.baseVersion} · {dateLabel(row.createdAt)}</small><p className="small text-break mb-0">Pengaju: {row.requestedBy}<br />{row.reason}<br /><code>{row.id}</code></p></td>
@@ -63,7 +63,7 @@ function PolicyRequestsPanel() {
         {row.status === 'PENDING' && (row.requestedBy === user?.id ? <><p className="small">Tidak dapat menyetujui pengajuan sendiri.</p>{can('settings.write') && <PolicyDecision row={row} action="cancel" />}</> : can(row.key === 'analysis-policy' ? 'settings.approve-engineering' : 'settings.approve-operational') ? <><PolicyDecision row={row} action="approve" /><PolicyDecision row={row} action="reject" /></> : <p className="small">Menunggu pemeriksa berizin sesuai jenis kebijakan.</p>)}
         {row.decidedBy && <p className="small text-break mb-0">Keputusan oleh {row.decidedBy}<br />{row.decisionReason}<br />{row.decidedAt && dateLabel(row.decidedAt)}</p>}
       </td>
-    </tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} />
+    </tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} setPageSize={setPageSize} label="pengajuan kebijakan" />
     <p className="form-text mt-3">Pengajuan stale tidak dapat disetujui. Batalkan/tolak lalu ajukan ulang berdasarkan versi aktif. Alasan keputusan wajib dan histori tidak ditimpa.</p>
   </ContentCard>
 }

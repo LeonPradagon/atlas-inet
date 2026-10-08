@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { check, foreignKey, index, integer, jsonb, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core'
+import { check, foreignKey, index, integer, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { entities } from './access.schema.js'
 import { user } from './auth.schema.js'
 import { networkSegments } from './network.schema.js'
@@ -43,7 +43,7 @@ export const bookings = pgTable('bookings', {
 
 export const allocations = pgTable('core_allocations', {
   id: uuid('id').primaryKey().defaultRandom(), entityId: uuid('entity_id').notNull(), segmentId: uuid('segment_id').notNull(),
-  sourceBookingId: uuid('source_booking_id').notNull().unique(), coreCount: integer('core_count').notNull(),
+  sourceBookingId: uuid('source_booking_id').unique(), coreCount: integer('core_count').notNull(),
   operationalReference: text('operational_reference').notNull(), activatedBy: text('activated_by').notNull(),
   activatedAt: timestamp('activated_at', { withTimezone: true }).notNull().defaultNow(),
   deallocatedAt: timestamp('deallocated_at', { withTimezone: true }), deallocatedBy: text('deallocated_by'), deallocationReason: text('deallocation_reason'),
@@ -51,6 +51,7 @@ export const allocations = pgTable('core_allocations', {
   foreignKey({ columns: [t.segmentId, t.entityId], foreignColumns: [networkSegments.id, networkSegments.ownerEntityId] }),
   foreignKey({ columns: [t.sourceBookingId, t.entityId], foreignColumns: [bookings.id, bookings.entityId] }),
   check('allocations_core_positive', sql`${t.coreCount} > 0`), index('allocations_segment_active_idx').on(t.segmentId, t.deallocatedAt),
+  uniqueIndex('allocations_active_existing_segment_unique').on(t.segmentId).where(sql`${t.sourceBookingId} IS NULL AND ${t.deallocatedAt} IS NULL`),
 ])
 
 export const waitingList = pgTable('waiting_list_entries', {

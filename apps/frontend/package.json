@@ -18,7 +18,8 @@
     "bootstrap-icons": "^1.13.1",
     "maplibre-gl": "^6.11.2",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "sweetalert2": "^11.26.25"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.3",

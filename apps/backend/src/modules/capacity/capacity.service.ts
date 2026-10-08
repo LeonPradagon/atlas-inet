@@ -7,7 +7,7 @@ import { allocations, auditLogs, bookings, idempotencyRecords, memberships, netw
 import { AccessService } from '../access/access.service.js'
 import { currentSetting, bookingPolicySchema } from '../settings/settings.service.js'
 import { CapacityRepository, readUsage, type Segment } from './capacity.repository.js'
-import type { CreateBooking } from './capacity.dto.js'
+import type { CreateBooking, ExistingUsageInput } from './capacity.dto.js'
 
 async function effect(tx: Transaction, segment: Segment, actorId: string, action: string, resourceId: string, details: Record<string, unknown>, notify = false) {
   await tx.insert(auditLogs).values({ entityId: segment.ownerEntityId, actorId, action, resourceId, details })
@@ -173,6 +173,39 @@ export class CapacityService {
     await this.repository.authorizeSegment(userId, segmentId, 'network.read')
     const [segment] = await this.database.db.select().from(networkSegments).where(eq(networkSegments.id, segmentId))
     return { data: await readUsage(this.database.db, segment) }
+  }
+  async recordExistingUsage(userId: string, id: string, version: number, input: ExistingUsageInput, key?: string) {
+    const scope = await this.repository.authorizeSegment(userId, id, 'network.write')
+    await this.access.requireEntityPermission(userId, scope.entityId, 'allocations.write')
+    return this.database.db.transaction(async (tx) => {
+      const replay = await this.replay(tx, userId, 'EXISTING_USAGE_RECORD', key, { id, version, ...input })
+      if (replay.existing) return { data: replay.existing }
+      const segment = await this.repository.lock(tx, id)
+      if (segment.version !== version) throw new ConflictException('Segment version changed; reload before recording existing usage')
+      if (segment.status !== 'ACTIVE') throw new ConflictException('Segment is inactive')
+      const [baseline] = await tx.select({ id: allocations.id }).from(allocations).where(and(eq(allocations.segmentId, id), isNull(allocations.sourceBookingId), isNull(allocations.deallocatedAt))).limit(1)
+      if (baseline) throw new ConflictException('Existing usage is already recorded; close the existing allocation with a reason before correcting it')
+      await this.expireLocked(tx, segment)
+      const usage = await readUsage(tx, segment)
+      if (usage.used + usage.booked + input.existingCoreCount > input.installedCoreCount) throw new ConflictException('Total core cannot be less than recorded Used + active Booked + unrecorded existing usage')
+      const [updated] = await tx.update(networkSegments).set({ installedCoreCount: input.installedCoreCount, capacityValidated: true, version: segment.version + 1, updatedAt: sql`clock_timestamp()` }).where(eq(networkSegments.id, id)).returning()
+      let allocationId: string | null = null
+      if (input.existingCoreCount > 0) {
+        const [record] = await tx.insert(allocations).values({ entityId: segment.ownerEntityId, segmentId: id, sourceBookingId: null, coreCount: input.existingCoreCount, operationalReference: input.operationalReference, activatedBy: userId }).returning()
+        allocationId = record.id
+      }
+      const response = { id, version: updated.version, allocationId, capacity: await readUsage(tx, updated) }
+      await effect(tx, updated, userId, 'EXISTING_USAGE_RECORDED', id, { allocationId, installedCoreCount: input.installedCoreCount, existingCoreCount: input.existingCoreCount, operationalReference: input.operationalReference, reason: input.reason, version: updated.version })
+      await tx.insert(idempotencyRecords).values({ userId, action: 'EXISTING_USAGE_RECORD', key: replay.key, payloadHash: replay.hash, response })
+      return { data: response }
+    })
+  }
+  async activeAllocations(userId: string, id: string, page: number, pageSize: number) {
+    await this.repository.authorizeSegment(userId, id, 'network.read')
+    const where = and(eq(allocations.segmentId, id), isNull(allocations.deallocatedAt))
+    const data = await this.database.db.select().from(allocations).where(where).orderBy(asc(allocations.activatedAt), asc(allocations.id)).limit(pageSize).offset((page - 1) * pageSize)
+    const [{ total }] = await this.database.db.select({ total: sql<number>`count(*)::int` }).from(allocations).where(where)
+    return { data, meta: { page, pageSize, total } }
   }
 
   async list(userId: string, entityId: string, page: number, pageSize: number, waiting = false,segmentId?: string,status?: string) {

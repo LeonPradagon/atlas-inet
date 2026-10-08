@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { atlasApi } from '../shared/api'
 import { domainKey, useEntityScope } from '../shared/EntityScope'
-import { dateLabel } from './DomainUi'
+import { dateLabel, useFeedbackMutation } from './DomainUi'
 
 export function NotificationBell() {
   const { entity, user, can } = useEntityScope()
@@ -83,7 +83,7 @@ export function NotificationBell() {
     staleTime: 15_000,
     refetchInterval: open && !realtime ? 30_000 : false,
   })
-  const markRead = useMutation({
+  const markRead = useFeedbackMutation({
     mutationFn: (id: string) => atlasApi.notifications.read(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: domainKey(entity?.id, user?.id, 'notifications') }),
   })

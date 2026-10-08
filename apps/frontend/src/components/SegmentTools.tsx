@@ -1,15 +1,16 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, atlasApi } from '../shared/api'
 import { domainKey, useEntityScope } from '../shared/EntityScope'
 import { dateLabel, Field, MutationStatus, numberLabel, Pagination, QueryState, useDomainMutation } from './DomainUi'
 import { ContentCard } from './ContentCard'
-import type { Segment } from '../shared/domain-types'
+import type { ExistingUsageInput, Segment } from '../shared/domain-types'
 
 export function SegmentPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
   const { entity, user, can } = useEntityScope()
   const [page, setPage] = useState(1)
-  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segments', page), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal), enabled: Boolean(entity) && can('network.read') })
+  const [pageSize, setPageSize] = useState(25)
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segments', page, pageSize), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal, pageSize), enabled: Boolean(entity) && can('network.read') })
   if (!can('network.read')) return <div className="mb-3"><Field label="ID segmen jaringan" name="segment-id" value={value} onChange={onChange} /><p className="form-text">Minta ID segmen dari tim jaringan jika daftar segmen tidak tersedia.</p></div>
   return <div className="mb-3">
     <label className="form-label" htmlFor="segment-picker">1. Pilih segmen jaringan</label>
@@ -23,7 +24,7 @@ export function SegmentPicker({ value, onChange }: { value: string; onChange: (i
     </QueryState>}
     {query.data?.data.length ? <>
       <p className="form-text mb-1">Menampilkan {query.data.data.length} segmen. Kapasitas diambil dari data tervalidasi.</p>
-      <Pagination page={page} meta={query.data.meta} setPage={setPage} />
+       <Pagination page={page} meta={query.data.meta} setPage={setPage} setPageSize={setPageSize} label="segmen untuk booking" />
     </> : null}
   </div>
 }
@@ -73,6 +74,7 @@ export function SegmentDetail({ id, editable = false, mapContext = false }: { id
     </>}
     {editable && can('network.write') && <MetadataEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
     {!editable && can('network.write') && <CapacityEditor key={`${id}:${query.data.data.version}`} segment={query.data.data} />}
+    <ExistingUsagePanel key={`existing:${id}`} segment={query.data.data} />
     {editable && <NameHistoryPanel id={id} />}
   </>}</QueryState></ContentCard>
 }
@@ -103,6 +105,62 @@ function CapacityEditor({ segment }: { segment: Segment }) {
     </form>
   </details>
 }
+function ExistingUsagePanel({ segment }: { segment: Segment }) {
+  const { entity, user, can } = useEntityScope()
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
+  const list = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'allocations', segment.id, page, pageSize), queryFn: ({ signal }) => atlasApi.capacity.allocations(segment.id, page, signal, pageSize), refetchInterval: 15_000 })
+  const [closing, setClosing] = useState(''), [closeReason, setCloseReason] = useState('')
+  const close = useDomainMutation(() => atlasApi.capacity.deallocate(closing, closeReason))
+  return <section aria-label="Pencatatan Used existing" className="mt-3">
+    <h5>Pemakaian core tercatat (Used)</h5>
+    <p className="form-text">Used berasal dari alokasi aktif, termasuk pemakaian sebelum aplikasi. Jangan catat ulang pemakaian yang sudah ada pada ledger ini.</p>
+    <QueryState query={list} empty={list.data?.data.length === 0} emptyMessage="Belum ada Used tercatat. Ini bukan bukti pemakaian fisik nol.">
+      <div className="table-responsive"><table className="table table-sm"><thead><tr><th>Sumber</th><th>Core</th><th>Referensi</th><th>Aksi</th></tr></thead><tbody>{list.data?.data.map((row) => <tr key={row.id}>
+        <td>{row.sourceBookingId ? 'Aktivasi booking' : 'Used existing'}</td><td>{row.coreCount}</td><td>{row.operationalReference}<br /><small>{row.id}</small></td>
+        <td>{can('allocations.write') && <button type="button" className="btn btn-outline-danger btn-sm" onClick={() => { setClosing(row.id);setCloseReason('');close.reset() }}>Tutup alokasi {row.coreCount} core</button>}</td>
+      </tr>)}</tbody></table></div>
+    </QueryState>
+    <Pagination page={page} meta={list.data?.meta} setPage={setPage} setPageSize={setPageSize} label="alokasi core" />
+    {closing && <form onSubmit={(event) => { event.preventDefault();if (!close.isPending) close.mutate(undefined, { onSuccess: () => { setClosing('');setCloseReason('') } }) }}>
+      <p className="small">Penutupan {closing} mengembalikan kapasitas Available. Pastikan pemakaian benar-benar berakhir atau catatan akan dikoreksi.</p>
+      <Field name={`existing-close-${segment.id}`} label="Alasan penutupan alokasi" value={closeReason} onChange={setCloseReason} />
+      <button className="btn btn-outline-danger" disabled={close.isPending}>Konfirmasi tutup alokasi</button>
+      <button type="button" className="btn btn-link" disabled={close.isPending} onClick={() => setClosing('')}>Batal</button>
+    </form>}
+    <MutationStatus mutation={close} />
+    {can('network.write') && can('allocations.write') && <ExistingUsageEditor segment={segment} />}
+  </section>
+}
+function ExistingUsageEditor({ segment }: { segment: Segment }) {
+  const [total, setTotal] = useState(segment.installedCoreCount?.toString() ?? '')
+  const [used, setUsed] = useState(''), [reference, setReference] = useState(''), [reason, setReason] = useState(''), [verified, setVerified] = useState(false)
+  const identity = useRef<{ payload: string; version: number; key: string } | null>(null)
+  const mutation = useDomainMutation(async (input: ExistingUsageInput) => {
+    const payload = JSON.stringify(input)
+    if (identity.current?.payload !== payload) identity.current = { payload, version: segment.version, key: crypto.randomUUID() }
+    const response = await atlasApi.capacity.recordExisting(segment.id, identity.current.version, input, identity.current.key)
+    identity.current = null
+    return response
+  })
+  const extraUsed = used === '' ? 0 : Number(used)
+  const available = total ? Number(total) - segment.capacity.used - segment.capacity.booked - extraUsed : null
+  return <details className="mt-3"><summary>Catat kapasitas dan Used existing yang belum tercatat</summary>
+    <form onSubmit={(event) => { event.preventDefault();if (verified && !mutation.isPending) mutation.mutate({ installedCoreCount: Number(total), existingCoreCount: Number(used), operationalReference: reference, reason, verified: true }, { onSuccess: () => { setUsed('');setReference('');setReason('');setVerified(false) } }) }}>
+      <fieldset disabled={mutation.isPending}>
+        <p className="form-text">Isi Used existing yang belum tercatat, bukan total Used keseluruhan. Sistem menambahkannya ke Used tercatat, tanpa membuat booking. Satu catatan existing aktif per segmen; untuk koreksi, tutup catatan lama dahulu dengan alasan.</p>
+        <Field name={`existing-total-${segment.id}`} label="Total core fisik terverifikasi" value={total} onChange={setTotal} type="number" min={1} max={1_000_000} step="1" />
+        <Field name={`existing-used-${segment.id}`} label="Used existing belum tercatat" value={used} onChange={setUsed} type="number" min={0} max={1_000_000} step="1" />
+        <p className="small">Used tercatat: {segment.capacity.used} · Booked: {segment.capacity.booked} · Perkiraan Available setelah pencatatan: {available ?? '—'}. Server memvalidasi ulang saat disimpan.</p>
+        <Field name={`existing-reference-${segment.id}`} label="Referensi verifikasi pemakaian existing" value={reference} onChange={setReference} />
+        <Field name={`existing-reason-${segment.id}`} label="Alasan pencatatan existing" value={reason} onChange={setReason} />
+        <label className="form-check mb-3"><input className="form-check-input" type="checkbox" checked={verified} required onChange={(event) => setVerified(event.target.checked)} />Total fisik dan Used existing telah diverifikasi; pemakaian ini belum tercatat di sistem.</label>
+        <button className="btn btn-primary" disabled={!verified || !total || used === '' || available === null || available < 0}>Simpan kapasitas dan Used existing</button>
+      </fieldset>
+      <MutationStatus mutation={mutation} />
+    </form>
+  </details>
+}
 function MetadataEditor({ segment }: { segment: Segment }) {
   const [name, setName] = useState(segment.cableName)
   const [core, setCore] = useState(segment.installedCoreCount?.toString() ?? '')
@@ -125,6 +183,7 @@ function MetadataEditor({ segment }: { segment: Segment }) {
 function NameHistoryPanel({ id }: { id: string }) {
   const { entity, user } = useEntityScope()
   const [page, setPage] = useState(1)
-  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'name-history', id, page), queryFn: ({ signal }) => atlasApi.network.nameHistory(id, page, signal) })
-  return <details className="mt-3"><summary>Histori perubahan nama</summary><QueryState query={query} empty={query.data?.data.length === 0}><ul>{query.data?.data.map((row) => <li key={row.id}>{row.oldName} → {row.newName} · policy {row.policyVersion} · {dateLabel(row.createdAt)} · {row.actorId}</li>)}</ul></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} /></details>
+  const [pageSize, setPageSize] = useState(25)
+  const query = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'name-history', id, page, pageSize), queryFn: ({ signal }) => atlasApi.network.nameHistory(id, page, signal, pageSize) })
+  return <details className="mt-3"><summary>Histori perubahan nama</summary><QueryState query={query} empty={query.data?.data.length === 0}><ul>{query.data?.data.map((row) => <li key={row.id}>{row.oldName} → {row.newName} · policy {row.policyVersion} · {dateLabel(row.createdAt)} · {row.actorId}</li>)}</ul></QueryState><Pagination page={page} meta={query.data?.meta} setPage={setPage} setPageSize={setPageSize} label="histori nama" /></details>
 }

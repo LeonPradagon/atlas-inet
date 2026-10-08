@@ -17,7 +17,10 @@ import { AssetsPage } from '../src/pages/AssetsPage'
 import { NetworkMapPage } from '../src/pages/NetworkMapPage'
 import { SegmentDetail } from '../src/components/SegmentTools'
 import { ReportsPage } from '../src/pages/ReportsPage'
+import { CableTypesPanel } from '../src/components/CableTypesPanel'
+import Swal from 'sweetalert2'
 
+vi.mock('sweetalert2', () => ({ default: { fire: vi.fn().mockResolvedValue({}), close: vi.fn(), showLoading: vi.fn() } }))
 vi.mock('../src/components/NetworkMapCanvas', () => ({ NetworkMapCanvas: ({ onViewportChange, features }: { onViewportChange?: (bbox: string) => void; features: unknown[] }) => <div>Map: {features.length} features {onViewportChange && <button onClick={() => onViewportChange('106,-7,107,-6')}>Report viewport</button>}</div> }))
 vi.mock('@tanstack/react-router', () => ({ Link: ({ children }: { children: ReactNode }) => <span>{children}</span> }))
 
@@ -49,11 +52,12 @@ function mount(children: ReactNode, permissions: string[], betaPermissions: stri
   render(<QueryClientProvider client={client}><EntityScopeProvider><ScopeHarness>{children}</ScopeHarness></EntityScopeProvider></QueryClientProvider>)
   return client
 }
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks() })
 beforeEach(() => {
   window.localStorage.clear()
   vi.spyOn(atlasApi.capacity, 'presalesUsers').mockResolvedValue({ data: [{ id: 'alice', name: 'Admin' }] })
   vi.spyOn(atlasApi.imports, 'list').mockResolvedValue({ data: [], meta: { page: 1, pageSize: 25, total: 0 } })
+  vi.spyOn(atlasApi.capacity, 'allocations').mockResolvedValue({ data: [], meta: { page: 1, pageSize: 25, total: 0 } })
 })
 
 describe('entity and session isolation', () => {
@@ -75,7 +79,7 @@ describe('entity and session isolation', () => {
     mount(<ReservationWorkspace />, ['bookings.create', 'bookings.read'], ['bookings.create', 'bookings.read'])
     await userEvent.type(screen.getByLabelText('Nama customer'), 'Private Alpha')
     expect((screen.getByLabelText('Nama customer') as HTMLInputElement).value).toBe('Private Alpha')
-    await waitFor(() => expect(list).toHaveBeenCalledWith(alpha, 1, '', expect.any(AbortSignal)))
+    await waitFor(() => expect(list).toHaveBeenCalledWith(alpha, 1, '', expect.any(AbortSignal), 25))
   })
   it('401 clears domain cache and disables grants before session recheck completes', async () => {
     const auth = vi.spyOn(atlasApi.auth, 'currentUser').mockImplementation(() => new Promise(() => {}))
@@ -105,6 +109,9 @@ describe('operational API interactions', () => {
     expect(await screen.findByText('booking-real')).toBeTruthy()
     expect(book.mock.calls[0][1]).toBe(book.mock.calls[1][1])
     expect(book.mock.calls[0][0]).toMatchObject({ segmentId: segment, coreCount: 2, presalesUserId: 'alice' })
+    expect(Swal.fire).toHaveBeenCalledWith(expect.objectContaining({ title: 'Sedang memproses', showConfirmButton: false }))
+    expect(Swal.fire).toHaveBeenCalledWith(expect.objectContaining({ icon: 'error', title: 'Capacity conflict', toast: true }))
+    expect(Swal.fire).toHaveBeenCalledWith(expect.objectContaining({ icon: 'success', title: 'Berhasil diproses', toast: true }))
   })
   it('uses server-wide dashboard summary and preserves unknown capacity', async () => {
     vi.spyOn(atlasApi.reports, 'utilization').mockResolvedValue({ data: [], meta: { page: 1, pageSize: 25, total: 51, asOf: '2026-10-03T00:00:00Z', summary: { segmentCount: 51, unknownCapacityCount: 1, total: null, used: 5, booked: 3, idle: null, available: null, waitingCount: 0, waitingCores: 0 } } })
@@ -169,7 +176,7 @@ describe('operational API interactions', () => {
     expect(screen.getByText(/Dimuat 1002 dari 1002/)).toBeTruthy()
     expect(pages).toHaveBeenCalledTimes(2)
     expect(screen.queryByText('REF-100')).toBeNull()
-    await userEvent.click(screen.getByRole('button', { name: 'Berikutnya' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Halaman berikutnya preview analisis' }))
     expect(screen.getByText('REF-100')).toBeTruthy()
     await userEvent.selectOptions(screen.getByLabelText('Baris per halaman preview analisis'), '10')
     expect(screen.getByText('REF-0')).toBeTruthy()
@@ -215,6 +222,29 @@ describe('operational API interactions', () => {
     expect(await screen.findByText('22 core tersedia')).toBeTruthy()
     expect(book.mock.calls[0][0]).toMatchObject({ presalesUserId: 'charlie', coreCount: 2 })
     expect(screen.getByRole('img', { name: 'Total 24, Used 0, Booked 2, Available 22' })).toBeTruthy()
+  })
+  it('records verified existing usage directly and refreshes Used/Available without creating a booking', async () => {
+    const capacity={total:null,used:0,booked:0,idle:null,available:null,waitingCount:0,waitingCores:0,asOf:'2026-10-08T00:00:00Z'}
+    const initial={id:segment,ownerEntityId:alpha,segmentCode:'SEG-1',cableName:'Imported label',datasetVersion:'v1',version:1,installedCoreCount:null,capacityValidated:false,status:'ACTIVE',cableType:null,installationMethod:null,roadSide:null,completeness:{status:'INCOMPLETE',missingFields:['cableType']},capacity}
+    let current=initial
+    vi.spyOn(atlasApi.network,'segment').mockImplementation(async()=>({data:current}) as never)
+    const book=vi.spyOn(atlasApi.capacity,'book')
+    const record=vi.spyOn(atlasApi.capacity,'recordExisting').mockImplementation(async()=>{
+      current={...initial,version:2,installedCoreCount:24,capacityValidated:true,capacity:{...capacity,total:24,used:6,idle:18,available:18}} as never
+      vi.mocked(atlasApi.capacity.allocations).mockResolvedValue({data:[{id:'existing-id',segmentId:segment,sourceBookingId:null,coreCount:6,operationalReference:'Inventory verified',activatedAt:'2026-10-08T00:00:00Z'}],meta:{page:1,pageSize:25,total:1}})
+      return {data:{id:segment,version:2,allocationId:'existing-id'}}
+    })
+    mount(<SegmentDetail id={segment} />,['network.read','network.write','allocations.write'])
+    await screen.findByText('Catat kapasitas dan Used existing yang belum tercatat')
+    await userEvent.click(screen.getByText('Catat kapasitas dan Used existing yang belum tercatat'))
+    for(const [label,value] of [['Total core fisik terverifikasi','24'],['Used existing belum tercatat','6'],['Referensi verifikasi pemakaian existing','Inventory verified'],['Alasan pencatatan existing','Initial inventory']]) fireEvent.change(screen.getByLabelText(label),{target:{value}})
+    expect((screen.getByRole('button',{name:'Simpan kapasitas dan Used existing'}) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.click(screen.getByLabelText('Total fisik dan Used existing telah diverifikasi; pemakaian ini belum tercatat di sistem.'))
+    await userEvent.click(screen.getByRole('button',{name:'Simpan kapasitas dan Used existing'}))
+    expect(await screen.findByText('18 core tersedia')).toBeTruthy()
+    expect(record).toHaveBeenCalledWith(segment,1,{installedCoreCount:24,existingCoreCount:6,operationalReference:'Inventory verified',reason:'Initial inventory',verified:true},expect.any(String))
+    expect(await screen.findByText('Used existing')).toBeTruthy()
+    expect(book).not.toHaveBeenCalled()
   })
   it('accepts Excel alongside KML/KMZ and downloads the scoped template without submitting a job', async () => {
     const template = vi.spyOn(atlasApi.analysis, 'template').mockResolvedValue(undefined)
@@ -444,8 +474,20 @@ describe('operational API interactions', () => {
     await userEvent.selectOptions(screen.getByLabelText('Baris per halaman hasil job'), '50')
     await waitFor(() => expect(rows).toHaveBeenLastCalledWith('paged-job', 1, expect.any(AbortSignal), 50))
     expect(await screen.findByText('Halaman 1 dari 3 · 1–50 dari 150 data')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: 'Terakhir' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Halaman 3 hasil job' }))
     await screen.findByText('PAGE-3')
+  })
+  it('uses left-aligned page size selector and compact arrow-only navigation', async () => {
+    vi.spyOn(atlasApi.network,'types').mockResolvedValue({data:[],meta:{page:1,pageSize:25,total:220}})
+    mount(<CableTypesPanel />,['network.read'])
+    const nav=await screen.findByRole('navigation',{name:'Pagination master tipe kabel'})
+    const controls=nav.querySelector('.btn-group')!
+    const pageSizeSelect = screen.getByLabelText('Baris per halaman master tipe kabel')
+    expect(pageSizeSelect.closest('label')?.parentElement?.querySelector('span')?.textContent).toContain('Halaman 1 dari 9')
+    expect(screen.getByRole('button',{name:'Halaman sebelumnya master tipe kabel'}).querySelector('i')?.className).toContain('bi-chevron-left')
+    expect(screen.getByRole('button',{name:'Halaman berikutnya master tipe kabel'}).querySelector('i')?.className).toContain('bi-chevron-right')
+    expect(controls.textContent).not.toMatch(/Pertama|Terakhir|Sebelumnya|Berikutnya/)
+    expect(nav.querySelectorAll('button')).toHaveLength(7)
   })
   it('loads every map feature across API pages', async () => {
     const map = vi.spyOn(atlasApi.network, 'map').mockImplementation(async (_entity, _bbox, _layers, page) => ({ data: { type: 'FeatureCollection', features: [{ type: 'Feature', id: `segments:${page}`, properties: { id: String(page), name: 'Synthetic fixture', layer: 'segments' }, geometry: { type: 'LineString', coordinates: [[106, -7], [107, -6]] } }] }, meta: { page, pageSize: 1000, total: 1001 } }))

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { initialize, PushMenu, teardown, Treeview } from 'admin-lte'
 import { atlasApi, currentUserQueryKey } from '../shared/api'
 import { pagePermissions, useEntityScope } from '../shared/EntityScope'
-import { PermissionNotice } from '../components/DomainUi'
+import { PermissionNotice, useFeedbackMutation } from '../components/DomainUi'
 import { NotificationBell } from '../components/NotificationBell'
 
 const SIDEBAR_OPENED_EVENT = 'opened.lte.push-menu'
@@ -87,7 +87,7 @@ export function AppShell() {
     refetchInterval: isLoginPage ? false : 60_000,
   })
   const isAuthenticated = currentUserQuery.isSuccess && Boolean(currentUserQuery.data)
-  const signOutMutation = useMutation({
+  const signOutMutation = useFeedbackMutation({
     mutationFn: () => atlasApi.auth.signOut(),
     onSuccess: async () => {
       setSessionMessage('')

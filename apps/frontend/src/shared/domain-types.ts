@@ -4,6 +4,8 @@ export interface UtilizationSummary { segmentCount: number; unknownCapacityCount
 export interface PageMeta { page: number; pageSize: number; total: number; asOf?: string; summary?: UtilizationSummary }
 export interface ApiResponse<T> { data: T; meta?: PageMeta }
 export interface Capacity { total: number | null; used: number; booked: number; idle: number | null; available: number | null; waitingCount: number; waitingCores: number; asOf: string; expiryPendingCount?: number }
+export interface ExistingUsageInput { installedCoreCount: number; existingCoreCount: number; operationalReference: string; reason: string; verified: true }
+export interface CoreAllocation { id: string; segmentId: string; sourceBookingId: string | null; coreCount: number; operationalReference: string; activatedAt: string }
 export interface Segment {
   id: string; ownerEntityId: string; segmentCode: string; cableName: string; datasetVersion: string; version: number;
   installedCoreCount: number | null; capacityValidated: boolean; installationMethod: string | null; roadSide: string | null; status: string;

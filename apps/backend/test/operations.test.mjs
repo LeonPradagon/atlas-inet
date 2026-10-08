@@ -731,6 +731,54 @@ test('Phase 2 operations: atomic capacity, imports, analysis, durable worker and
       await data(await request(`allocations/${allocation.id}/deallocate`,'POST',{reason:'Synthetic cleanup'}),201)
       assert.equal((await usage(item.id)).available,24)
     })
+    await t.test('existing usage is atomic, audited, idempotent and included in booking/monitoring without fabricated bookings',async () => {
+      const item=await segment('EXISTING-USAGE',null)
+      const input={installedCoreCount:24,existingCoreCount:6,operationalReference:'Synthetic verified inventory',reason:'Initial existing usage',verified:true}
+      const key=randomUUID(),path=`network/segments/${item.id}/existing-usage`
+      const headers={'If-Match':'1','Idempotency-Key':key}
+      const before=(await pool.query('SELECT count(*)::int AS n FROM bookings')).rows[0].n
+      assert.equal((await request(path,'POST',input,headers,'')).status,401)
+      assert.equal((await request(path,'POST',input,headers,bCookie)).status,404)
+      assert.equal((await request(path,'POST',{...input,verified:false},headers)).status,400)
+      assert.equal((await request(path,'POST',{...input,existingCoreCount:25},headers)).status,409)
+      assert.equal((await usage(item.id)).total,null)
+      const [a,b]=await Promise.all([request(path,'POST',input,headers),request(path,'POST',input,headers)])
+      const first=await data(a,201),replayed=await data(b,201)
+      assert.equal(first.allocationId,replayed.allocationId);assert.equal(first.capacity.used,6);assert.equal(first.capacity.available,18)
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM bookings')).rows[0].n,before)
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM audit_logs WHERE resource_id=$1 AND action='EXISTING_USAGE_RECORDED'",[item.id])).rows[0].n,1)
+      assert.equal((await request(path,'POST',{...input,existingCoreCount:7},headers)).status,409)
+      assert.equal((await request(path,'POST',input,{'If-Match':'2','Idempotency-Key':randomUUID()})).status,409)
+      const listed=await (await request(`network/segments/${item.id}/allocations`)).json()
+      assert.equal(listed.data.length,1);assert.equal(listed.data[0].sourceBookingId,null)
+      assert.equal((await request(`network/segments/${item.id}/allocations`,'GET',undefined,{},bCookie)).status,404)
+      const booking=await data(await book(item.id,2),201)
+      const live=await usage(item.id);assert.equal(live.total,24);assert.equal(live.used,6);assert.equal(live.booked,2);assert.equal(live.available,16)
+      assert.equal((await book(item.id,17)).status,409)
+      const report=await (await request(`reports/utilization?entityId=${alpha.entityId}&pageSize=100`)).json()
+      const result=report.data.find((row)=>row.segmentId===item.id);assert.equal(result.used,6);assert.equal(result.available,16)
+      await migrate(db,{migrationsFolder:'drizzle'})
+      assert.equal((await usage(item.id)).used,6)
+      await data(await request(`allocations/${first.allocationId}/deallocate`,'POST',{reason:'Correct verified inventory'}),201)
+      assert.equal((await usage(item.id)).available,22)
+      const corrected=await data(await request(path,'POST',{...input,existingCoreCount:5}, {'If-Match':'2','Idempotency-Key':randomUUID()}),201)
+      assert.equal(corrected.capacity.used,5);assert.equal(corrected.capacity.available,17)
+      await data(await request(`bookings/${booking.id}/release`,'POST',{reason:'Synthetic cleanup'}),201)
+      await data(await request(`allocations/${corrected.allocationId}/deallocate`,'POST',{reason:'Synthetic cleanup'}),201)
+    })
+    await t.test('zero existing usage creates no allocation and setup races cannot overbook',async () => {
+      const zero=await segment('EXISTING-ZERO',null)
+      const base={installedCoreCount:24,existingCoreCount:0,operationalReference:'Verified no existing usage',reason:'Initial inventory',verified:true}
+      const response=await data(await request(`network/segments/${zero.id}/existing-usage`,'POST',base,{'If-Match':'1','Idempotency-Key':randomUUID()}),201)
+      assert.equal(response.allocationId,null);assert.equal(response.capacity.available,24)
+      const item=await segment('EXISTING-RACE',24)
+      const attempts=await Promise.all([
+        request(`network/segments/${item.id}/existing-usage`,'POST',{...base,existingCoreCount:20},{'If-Match':'1','Idempotency-Key':randomUUID()}),
+        book(item.id,8),
+      ])
+      assert.deepEqual(attempts.map((r)=>r.status).sort(),[201,409])
+      const used=await usage(item.id);assert.ok(used.available>=0);assert.ok(used.used+used.booked<=24)
+    })
     await t.test('expired worker lease is recovered; committed row results are never duplicated',async () => {
       const buffer=Buffer.from('<kml><Document><Placemark><name>LEASE</name><Point><coordinates>106.85,-6.2</coordinates></Point></Placemark></Document></kml>')
       const preview=await data(await upload('analysis/uploads','lease.kml',buffer,{ entityId:alpha.entityId }),201)

@@ -12,6 +12,7 @@ export function ReservationWorkspace({ waiting = false }: { waiting?: boolean })
   const [segmentId, setSegmentId] = useState('')
   const [presales, setPresales] = useState(user?.id ?? '')
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
   const [status, setStatus] = useState('')
   const [receipt, setReceipt] = useState('')
   const identity = useRef<{ payload: string; key: string } | null>(null)
@@ -25,7 +26,7 @@ export function ReservationWorkspace({ waiting = false }: { waiting?: boolean })
     identity.current = null
     return response
   })
-  const list = useQuery<ApiResponse<(Booking | WaitingEntry)[]>>({ queryKey: domainKey(entity?.id, user?.id, resource, page, status), enabled: Boolean(entity) && can(`${resource}.read`), queryFn: ({ signal }) => waiting ? atlasApi.capacity.waiting(entity!.id, page, status, signal) : atlasApi.capacity.bookings(entity!.id, page, status, signal) })
+  const list = useQuery<ApiResponse<(Booking | WaitingEntry)[]>>({ queryKey: domainKey(entity?.id, user?.id, resource, page, pageSize, status), enabled: Boolean(entity) && can(`${resource}.read`), queryFn: ({ signal }) => waiting ? atlasApi.capacity.waiting(entity!.id, page, status, signal, pageSize) : atlasApi.capacity.bookings(entity!.id, page, status, signal, pageSize) })
   const allocateKeys = useRef(new Map<string, string>())
   const allocate = useDomainMutation((id: string) => {
     if (!allocateKeys.current.has(id)) allocateKeys.current.set(id, crypto.randomUUID())
@@ -59,7 +60,7 @@ export function ReservationWorkspace({ waiting = false }: { waiting?: boolean })
           {can('allocations.write') && <ReasonAction title="Konversi seluruh booking ke Used" label="Referensi operasional" action={(value) => atlasApi.capacity.activate(row.id, value)} showId />}
         </>}
         <small className="d-block text-break">ID: {row.id}</small>
-      </td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={list.data?.meta} setPage={setPage} /><MutationStatus mutation={allocate} />
+      </td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={list.data?.meta} setPage={setPage} setPageSize={setPageSize} label={waiting ? 'waiting list' : 'booking'} /><MutationStatus mutation={allocate} />
     </ContentCard>}
     {!can(`${resource}.create`) && segmentId && <SegmentDetail id={segmentId} />}
     {!waiting && can('allocations.write') && <DeallocateForm />}

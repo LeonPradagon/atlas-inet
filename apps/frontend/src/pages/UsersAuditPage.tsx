@@ -11,16 +11,17 @@ const emptyFilters: AuditFilters = { search: '', action: '', from: '', to: '' }
 export function UsersAuditPage() {
   const { entity, user, can } = useEntityScope()
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(25)
   const [draft, setDraft] = useState<AuditFilters>(emptyFilters)
   const [filters, setFilters] = useState<AuditFilters>(emptyFilters)
   const query = useQuery({
-    queryKey: domainKey(entity?.id, user?.id, 'audit', page, filters),
+    queryKey: domainKey(entity?.id, user?.id, 'audit', page, pageSize, filters),
     queryFn: ({ signal }) => atlasApi.audit(entity!.id, page, {
       search: filters.search || undefined,
       action: filters.action || undefined,
       from: filters.from || undefined,
       to: filters.to || undefined,
-    }, signal),
+    }, signal, pageSize),
     enabled: Boolean(entity) && can('audit.read'),
   })
 
@@ -63,6 +64,6 @@ export function UsersAuditPage() {
         </tr>)}</tbody>
       </table></div>
     </QueryState>
-    <Pagination page={page} meta={query.data?.meta} setPage={setPage} />
+    <Pagination page={page} meta={query.data?.meta} setPage={setPage} setPageSize={setPageSize} label="audit log" />
   </ContentCard>
 }

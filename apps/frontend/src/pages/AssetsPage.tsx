@@ -21,11 +21,11 @@ function sourcePoleHeight(properties?: Record<string, string>) {
 export function AssetsPage() {
   const { entity, user, can } = useEntityScope()
   const [file, setFile] = useState<File | null>(null), [source, setSource] = useState(''), [mappings, setMappings] = useState('')
-  const [page, setPage] = useState(1), [selected, setSelected] = useState('')
-  const [importPage, setImportPage] = useState(1), [activePreview, setActivePreview] = useState<ImportPreviewSummary | null>(null)
+  const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [selected, setSelected] = useState('')
+  const [importPage, setImportPage] = useState(1), [importPageSize, setImportPageSize] = useState(25), [activePreview, setActivePreview] = useState<ImportPreviewSummary | null>(null)
   const previewDialog = useRef<HTMLDialogElement>(null)
   const upload = useDomainMutation((mappingText: string) => atlasApi.imports.preview(entity!.id, source, file!, mappingText))
-  const history = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'import-previews', importPage), queryFn: ({ signal }) => atlasApi.imports.list(entity!.id, importPage, signal), enabled: Boolean(entity) && can('imports.write') })
+  const history = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'import-previews', importPage, importPageSize), queryFn: ({ signal }) => atlasApi.imports.list(entity!.id, importPage, signal, importPageSize), enabled: Boolean(entity) && can('imports.write') })
   const savedPreview = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'import-preview', activePreview?.id), queryFn: ({ signal }) => atlasApi.imports.get(activePreview!.id, signal), enabled: Boolean(activePreview && entity) && can('imports.write'), refetchOnMount: 'always' })
   useEffect(() => {
     const dialog = previewDialog.current
@@ -51,7 +51,7 @@ export function AssetsPage() {
       if (window.scrollX !== scrollX || window.scrollY !== scrollY) window.scrollTo(scrollX, scrollY)
     }
   }, [activePreview])
-  const list = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'segments', page), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal), enabled: can('network.read') && Boolean(entity) })
+  const list = useQuery({ queryKey: domainKey(entity?.id, user?.id, 'assets-segments', page, pageSize), queryFn: ({ signal }) => atlasApi.network.segments(entity!.id, page, signal, pageSize), enabled: can('network.read') && Boolean(entity) })
   function resetPreview() {
     upload.reset()
   }
@@ -74,14 +74,14 @@ export function AssetsPage() {
            {history.data?.data.map((row) => <tr key={row.id}><td>{row.sourceName}<br /><small className="text-secondary">{row.sourceSystem}</small></td><td className="text-nowrap">{dateLabel(row.createdAt)}</td><td>{row.validRows}</td><td>{row.referenceAreas + row.referenceFeatures}</td><td>{row.errors}</td><td>{row.status}</td><td><button className="btn btn-outline-primary btn-sm" type="button" onClick={() => { upload.reset(); setActivePreview(row) }}>Lihat preview</button></td></tr>)}
         </tbody></table></div>
       </QueryState>
-      <Pagination page={importPage} meta={history.data?.meta} setPage={setImportPage} />
+       <Pagination page={importPage} meta={history.data?.meta} setPage={setImportPage} setPageSize={setImportPageSize} label="riwayat import" />
       </ContentCard>
       {activePreview && <dialog ref={previewDialog} className="import-preview-dialog" aria-labelledby="saved-import-preview-title" onClose={() => setActivePreview(null)}>
         <div className="import-preview-dialog-header"><div><h2 id="saved-import-preview-title" className="h5 mb-1">Preview impor tersimpan</h2><p className="small text-secondary mb-0">{activePreview.sourceName} · {activePreview.sourceSystem}</p></div><button className="btn-close" type="button" aria-label="Tutup preview" onClick={() => { const dialog = previewDialog.current; if (dialog && typeof dialog.close === 'function') dialog.close(); setActivePreview(null) }} /></div>
         <div className="import-preview-dialog-body"><QueryState query={savedPreview}>{savedPreview.data && <ImportStagingReview key={savedPreview.data.data.id} initial={savedPreview.data.data} uploading={false} />}</QueryState></div>
       </dialog>}
     </>}
-    {can('network.read') && <ContentCard title="Segmen jaringan published"><QueryState query={list} empty={list.data?.data.length === 0}><div className="table-responsive"><table className="table table-striped"><thead><tr><th>Segmen / kabel</th><th>Status</th><th>Kelengkapan</th><th>Version</th></tr></thead><tbody>{list.data?.data.map((row) => <tr key={row.id}><td><button className="btn btn-link p-0 text-start" onClick={() => setSelected(row.id)}>{row.segmentCode} · {row.cableName}</button></td><td>{row.status}</td><td>{row.completeness.status}</td><td>{row.version}</td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={list.data?.meta} setPage={setPage} /></ContentCard>}
+    {can('network.read') && <ContentCard title="Segmen jaringan published"><QueryState query={list} empty={list.data?.data.length === 0}><div className="table-responsive"><table className="table table-striped"><thead><tr><th>Segmen / kabel</th><th>Status</th><th>Kelengkapan</th><th>Version</th></tr></thead><tbody>{list.data?.data.map((row) => <tr key={row.id}><td><button className="btn btn-link p-0 text-start" onClick={() => setSelected(row.id)}>{row.segmentCode} · {row.cableName}</button></td><td>{row.status}</td><td>{row.completeness.status}</td><td>{row.version}</td></tr>)}</tbody></table></div></QueryState><Pagination page={page} meta={list.data?.meta} setPage={setPage} setPageSize={setPageSize} label="aset jaringan" /></ContentCard>}
     {selected && <SegmentDetail id={selected} editable />}
     {(can('network.read') || can('network.master-write')) && <CableTypesPanel />}
   </>
@@ -89,6 +89,7 @@ export function AssetsPage() {
 function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; uploading: boolean }) {
   const [preview, setPreview] = useState(initial)
   const [errorPage, setErrorPage] = useState(1), [rowPage, setRowPage] = useState(1), [classificationPage, setClassificationPage] = useState(1)
+  const [errorPageSize, setErrorPageSize] = useState(25), [rowPageSize, setRowPageSize] = useState(25), [classificationPageSize, setClassificationPageSize] = useState(25)
   const [assetCodes, setAssetCodes] = useState<Record<number, string>>({})
   const [selectedKinds, setSelectedKinds] = useState<Record<number, string>>({})
   const [poleHeights, setPoleHeights] = useState<Record<number, string>>({})
@@ -104,10 +105,10 @@ function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; u
     const suggestion = classifyKmlCandidate({ name: feature.name, geometryType: feature.geometry.type, folderPath: properties.kmlFolderPath, attributes: properties })
     return suggestion ? [{ feature, suggestion }] : []
   }), [preview.referenceFeatures])
-  const visibleSuggestions = suggestions.slice((classificationPage - 1) * 20, classificationPage * 20)
+  const visibleSuggestions = suggestions.slice((classificationPage - 1) * classificationPageSize, classificationPage * classificationPageSize)
   const duplicateWarnings = preview.errors.filter((row) => row.code === 'DUPLICATE_ASSET_GEOMETRY_SKIPPED')
   const blockingErrors = preview.errors.filter((row) => row.code !== 'DUPLICATE_ASSET_GEOMETRY_SKIPPED')
-  const errors = blockingErrors.slice((errorPage - 1) * 25, errorPage * 25)
+  const errors = blockingErrors.slice((errorPage - 1) * errorPageSize, errorPage * errorPageSize)
   return <><hr /><p>ID preview: <code>{preview.id}</code> · {preview.rows.length} aset jaringan{preview.status === 'PUBLISHED' ? ' diterbitkan' : ' menunggu penerbitan'} · {preview.areas.length} Area Referensi · {preview.referenceFeatures.length} geometri titik/garis di peta ({unmappedFeatures} belum terpetakan) · {duplicateWarnings.length} fitur kembar dilewati · {blockingErrors.length} error.</p>
     {suggestions.length > 0 && <details className="mb-3"><summary>Saran yang belum diterbitkan otomatis ({suggestions.length})</summary>
       <p className="small text-secondary mt-2">Fitur ini belum lolos syarat publikasi otomatis. Periksa tipe dan data wajib sebelum memilih klasifikasi manual; jika tidak pasti, biarkan sebagai referensi.</p>
@@ -129,13 +130,13 @@ function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; u
           </tr>
         })}
       </tbody></table></div>
-      <Pagination page={classificationPage} meta={{ page: classificationPage, pageSize: 20, total: suggestions.length }} setPage={setClassificationPage} />
+      <Pagination page={classificationPage} meta={{ page: classificationPage, pageSize: classificationPageSize, total: suggestions.length }} setPage={setClassificationPage} setPageSize={setClassificationPageSize} label="saran klasifikasi" />
     </details>}
     {duplicateWarnings.length > 0 && <div className="alert alert-info" role="status">{duplicateWarnings.length} Placemark memiliki tipe, kode, dan koordinat yang sama. Satu diterbitkan sebagai aset; salinannya tetap sebagai referensi KML.</div>}
     {blockingErrors.length > 0 && <div className="alert alert-warning"><ul>{errors.map((row) => <li key={row.rowNumber} className="mb-3">Baris {row.rowNumber}: {row.message}
       {row.sourceRow && <><p className="small mb-1">{row.sourceRow.kind} · {row.sourceRow.code} · {row.sourceRow.address}</p><button className="btn btn-outline-primary btn-sm" disabled={disabled} onClick={() => geocode.mutate(row.rowNumber, { onSuccess: (response) => setPreview(response.data) })}>Cari koordinat baris {row.rowNumber}</button>
         {row.candidates?.map((candidate, index) => <div key={index} className="mt-2"><span>{candidate.label} · {candidate.latitude}, {candidate.longitude} · {candidate.precision ?? 'Perlu verifikasi'}</span> <button className="btn btn-outline-primary btn-sm" disabled={disabled || !row.lookupId} onClick={() => confirm.mutate({ rowNumber: row.rowNumber, lookupId: row.lookupId!, index }, { onSuccess: (response) => { setPreview(response.data); setErrorPage(1) } })}>Konfirmasi kandidat {index + 1} baris {row.rowNumber}</button></div>)}</>}
-    </li>)}</ul><Pagination page={errorPage} meta={{ page: errorPage, pageSize: 25, total: blockingErrors.length }} setPage={setErrorPage} /></div>}
+     </li>)}</ul><Pagination page={errorPage} meta={{ page: errorPage, pageSize: errorPageSize, total: blockingErrors.length }} setPage={setErrorPage} setPageSize={setErrorPageSize} label="error import" /></div>}
     {geocode.isPending && <p role="status">Mencari koordinat melalui geocoder internal…</p>}
       {(preview.areasPublishedAt || preview.referenceFeatures.length > 0) && <p className="small text-secondary">Geometri referensi tetap tersedia; hanya fitur yang lolos klasifikasi dan validasi menjadi aset operasional.</p>}
       {preview.status === 'PUBLISHED' && <div className="alert alert-success" role="status">{preview.rows.length} aset valid sudah diterbitkan otomatis ke jaringan aktif.</div>}
@@ -145,6 +146,6 @@ function ImportStagingReview({ initial, uploading }: { initial: ImportPreview; u
       {preview.status === 'PREVIEW' && blockingErrors.length > 0 && <div className="alert alert-info" role="status">Selesaikan error impor sebelum menerbitkan aset. Geometri referensi tetap tersedia.</div>}
      {geocode.isError && <MutationStatus mutation={geocode} />}{confirm.isError && <MutationStatus mutation={confirm} />}{confirmClassification.isError && <MutationStatus mutation={confirmClassification} />}{publish.isError && <MutationStatus mutation={publish} />}
      <p className="form-text">Alamat sumber dikirim ke geocoder internal untuk pencarian koordinat; hasil geocoding tetap perlu konfirmasi. Kapasitas dan relasi jaringan tidak terisi otomatis. Data Photon: © OpenStreetMap contributors · ODbL 1.0.</p>
-      {preview.rows.length > 0 ? <details><summary>Preview baris {(rowPage - 1) * 100 + 1}–{Math.min(rowPage * 100, preview.rows.length)} dari {preview.rows.length}</summary><table className="table table-sm"><thead><tr><th>Baris</th><th>Kind</th><th>Code</th><th>Nama kabel dari KML</th><th>Koordinat / sumber</th></tr></thead><tbody>{preview.rows.slice((rowPage - 1) * 100, rowPage * 100).map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.kind}</td><td>{row.code}</td><td>{row.cableName ?? '—'}</td><td>{row.geometry && JSON.stringify(row.geometry)}<br />{row.geocoding?.provider} {row.geocoding?.datasetVersion}</td></tr>)}</tbody></table><Pagination page={rowPage} meta={{ page: rowPage, pageSize: 100, total: preview.rows.length }} setPage={setRowPage} /></details> : <p className="text-secondary small">Tidak ada baris aset operasional valid di preview ini.</p>}
+      {preview.rows.length > 0 ? <details><summary>Preview baris {(rowPage - 1) * rowPageSize + 1}–{Math.min(rowPage * rowPageSize, preview.rows.length)} dari {preview.rows.length}</summary><table className="table table-sm"><thead><tr><th>Baris</th><th>Kind</th><th>Code</th><th>Nama kabel dari KML</th><th>Koordinat / sumber</th></tr></thead><tbody>{preview.rows.slice((rowPage - 1) * rowPageSize, rowPage * rowPageSize).map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.kind}</td><td>{row.code}</td><td>{row.cableName ?? '—'}</td><td>{row.geometry && JSON.stringify(row.geometry)}<br />{row.geocoding?.provider} {row.geocoding?.datasetVersion}</td></tr>)}</tbody></table><Pagination page={rowPage} meta={{ page: rowPage, pageSize: rowPageSize, total: preview.rows.length }} setPage={setRowPage} setPageSize={setRowPageSize} label="preview aset" /></details> : <p className="text-secondary small">Tidak ada baris aset operasional valid di preview ini.</p>}
    </>
 }
