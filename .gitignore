@@ -13,3 +13,8 @@ apps/frontend/.env
 apps/frontend/.env.*
 !.env.example
 var/
+
+# Local E2E test artifacts and reports
+.playwright-mcp/
+.opencode/
+docs/e2e-test-plan.md

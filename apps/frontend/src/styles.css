@@ -74,6 +74,20 @@ body {
   margin-bottom: 1rem;
 }
 
+@media (min-width: 1200px) {
+  .reservation-segment-detail {
+    display: flex;
+    max-height: min(56rem, calc(100vh - 8rem));
+    flex-direction: column;
+  }
+
+  .reservation-segment-detail > .card-body {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+  }
+}
+
 .import-preview-dialog {
   width: min(96vw, 76rem);
   max-width: unset;

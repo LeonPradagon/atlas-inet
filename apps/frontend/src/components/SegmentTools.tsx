@@ -28,7 +28,7 @@ export function SegmentPicker({ value, onChange }: { value: string; onChange: (i
     </> : null}
   </div>
 }
-export function SegmentDetail({ id, editable = false, mapContext = false }: { id: string; editable?: boolean; mapContext?: boolean }) {
+export function SegmentDetail({ id, editable = false, mapContext = false, cardClassName = '' }: { id: string; editable?: boolean; mapContext?: boolean; cardClassName?: string }) {
   const { entity, user, can } = useEntityScope()
   const [poleHeightFilter, setPoleHeightFilter] = useState('all')
   const validId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
@@ -38,7 +38,7 @@ export function SegmentDetail({ id, editable = false, mapContext = false }: { id
     return response
    }, enabled: validId && can('network.read'), refetchInterval: 15_000 })
   if (!validId || !can('network.read')) return <p className="text-secondary">Pilih ID segmen dengan izin baca untuk melihat detail kapasitas.</p>
-  return <ContentCard title={mapContext ? 'Detail aset jaringan pada peta' : 'Detail segmen'}><QueryState query={query}>{query.data && <>
+   return <ContentCard title={mapContext ? 'Detail aset jaringan pada peta' : 'Detail segmen'} className={cardClassName}><QueryState query={query}>{query.data && <>
     <h4>{query.data.data.cableName}</h4><p className="small text-secondary">{query.data.data.segmentCode} · Dataset {query.data.data.datasetVersion} · {query.data.data.status}</p>
     <CapacityIndicator capacity={query.data.data.capacity} />
     {mapContext ? <dl className="row">
