@@ -46,6 +46,7 @@ const navigationGroups = [
     label: 'Administrasi',
     icon: 'bi-gear',
     items: [
+      { label: 'Buat Akun', to: '/accounts', icon: 'bi-person-plus' },
       { label: 'Pengaturan', to: '/settings', icon: 'bi-gear' },
       { label: 'Audit Log', to: '/access-audit', icon: 'bi-journal-text' },
     ],
@@ -63,6 +64,7 @@ const pageTitles: Record<string, string> = {
   '/notifications': 'Notifikasi',
   '/settings': 'Pengaturan',
   '/access-audit': 'Audit Log',
+  '/accounts': 'Buat Akun',
 }
 
 export function AppShell() {
@@ -72,6 +74,9 @@ export function AppShell() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
   const title = pageTitles[pathname] ?? 'ATLAS'
   const isLoginPage = pathname === '/login'
+  const canAccessPage = (path: string) => path === '/accounts'
+    ? scope.entities.some((entity) => entity.permissions.includes('accounts.manage'))
+    : pagePermissions[path]?.some(scope.can) ?? false
   const [sidebarExpanded, setSidebarExpanded] = useState(() => window.matchMedia('(min-width: 992px)').matches)
   const activeGroup = navigationGroups.find((group) => group.items.some((item) => item.to === pathname))?.id ?? null
   const [openGroup, setOpenGroup] = useState<string | null>(activeGroup)
@@ -280,7 +285,7 @@ export function AppShell() {
                 </Link>
               </li>
               {navigationGroups.map((group) => {
-                const items = group.items.filter((item) => pagePermissions[item.to]?.some(scope.can))
+                const items = group.items.filter((item) => canAccessPage(item.to))
                 if (!items.length) return null
                 const isOpen = openGroup === group.id
                 const isActive = group.items.some((item) => item.to === pathname)
@@ -347,7 +352,7 @@ export function AppShell() {
         </div>
         <div className="app-content">
           <div className="container-fluid page-container">
-            {pathname !== '/' && !pagePermissions[pathname]?.some(scope.can) ? <PermissionNotice /> : <div key={`${currentUserQuery.data?.user.id}:${scope.entity?.id ?? 'none'}:${scope.entity?.permissions.join(',')}`}><Outlet /></div>}
+            {pathname !== '/' && !canAccessPage(pathname) ? <PermissionNotice /> : <div key={`${currentUserQuery.data?.user.id}:${scope.entity?.id ?? 'none'}:${scope.entity?.permissions.join(',')}`}><Outlet /></div>}
           </div>
         </div>
       </main>

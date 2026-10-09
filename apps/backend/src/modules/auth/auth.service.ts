@@ -7,12 +7,19 @@ import { createAuth } from './auth.js'
 @Injectable()
 export class AuthService {
   readonly instance
+  private readonly accountProvisioner
 
   constructor(
     database: DatabaseService,
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
     this.instance = createAuth(database.db, config)
+    // Internal account provisioning only. Public auth handler keeps self-signup disabled.
+    this.accountProvisioner = createAuth(database.db, config, true)
+  }
+
+  createUser(input: { email: string; name: string; password: string }) {
+    return this.accountProvisioner.api.signUpEmail({ body: input })
   }
 
   getSession(headers: NodeJS.Dict<string | string[]>) {

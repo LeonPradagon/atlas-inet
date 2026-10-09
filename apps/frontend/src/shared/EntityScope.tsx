@@ -7,7 +7,7 @@ import type { EntityAccess } from './domain-types'
 export function resolveEntity(access: EntityAccess[]): EntityAccess | undefined {
   return access[0]
 }
-const ScopeContext = createContext<{ entity?: EntityAccess; user?: CurrentUser; can: (permission: string) => boolean } | null>(null)
+const ScopeContext = createContext<{ entity?: EntityAccess; entities: EntityAccess[]; user?: CurrentUser; can: (permission: string) => boolean } | null>(null)
 export function EntityScopeProvider({ children }: { children: ReactNode }) {
   const client = useQueryClient()
   const session = useQuery<CurrentUserResponse>({ queryKey: currentUserQueryKey, queryFn: ({ signal }) => atlasApi.auth.currentUser(signal), retry: false, staleTime: 30_000 })
@@ -23,7 +23,7 @@ export function EntityScopeProvider({ children }: { children: ReactNode }) {
   }, [client])
   const entities = session.isSuccess ? session.data.entityAccess ?? [] : []
   const entity = resolveEntity(entities)
-  return <ScopeContext.Provider value={{ entity, user: session.isSuccess ? session.data.user : undefined, can: (permission) => Boolean(entity?.permissions.includes(permission)) }}>{children}</ScopeContext.Provider>
+  return <ScopeContext.Provider value={{ entity, entities, user: session.isSuccess ? session.data.user : undefined, can: (permission) => Boolean(entity?.permissions.includes(permission)) }}>{children}</ScopeContext.Provider>
 }
 export function useEntityScope() {
   const context = useContext(ScopeContext)
@@ -36,4 +36,5 @@ export const pagePermissions: Record<string, string[]> = {
   '/bookings': ['bookings.read', 'bookings.create'], '/waiting-list': ['waiting-list.read', 'waiting-list.create'],
   '/assets': ['network.read', 'imports.write', 'network.master-write'], '/reports': ['reports.read', 'reports.export'],
   '/notifications': ['notifications.read'], '/settings': ['settings.read'], '/access-audit': ['audit.read'],
+  '/accounts': ['accounts.manage'],
 }

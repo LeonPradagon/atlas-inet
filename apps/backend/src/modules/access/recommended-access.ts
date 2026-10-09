@@ -10,6 +10,7 @@ export const recommendedAccessProfiles = {
     'notifications.read', 'notifications.receive', 'audit.read',
     'settings.read', 'settings.write', 'settings.approve-operational', 'settings.approve-engineering',
   ],
+  'account-provisioner': ['accounts.manage'],
   'policy-requester': ['settings.read', 'settings.write', 'notifications.read'],
   'policy-approver-operational': ['settings.read', 'settings.approve-operational', 'notifications.read', 'audit.read'],
   'policy-approver-engineering': ['settings.read', 'settings.approve-engineering', 'notifications.read', 'audit.read'],

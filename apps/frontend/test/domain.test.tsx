@@ -17,6 +17,7 @@ import { AssetsPage } from '../src/pages/AssetsPage'
 import { NetworkMapPage } from '../src/pages/NetworkMapPage'
 import { SegmentDetail } from '../src/components/SegmentTools'
 import { ReportsPage } from '../src/pages/ReportsPage'
+import { AccountManagementPage } from '../src/pages/AccountManagementPage'
 import { CableTypesPanel } from '../src/components/CableTypesPanel'
 import Swal from 'sweetalert2'
 
@@ -94,6 +95,33 @@ describe('entity and session isolation', () => {
 })
 
 describe('operational API interactions', () => {
+  it('creates a booking account with confirmed initial password and clears secret fields', async () => {
+    const create = vi.spyOn(atlasApi.accounts, 'create').mockResolvedValue({ data: { id: 'new-user', name: 'Booking Tester', email: 'booking@example.test', profile: 'booking-manager' } })
+    mount(<AccountManagementPage />, ['accounts.manage'])
+    fireEvent.change(screen.getByLabelText('Nama lengkap'), { target: { value: 'Booking Tester' } })
+    fireEvent.change(screen.getByLabelText('Email kerja'), { target: { value: 'booking@example.test' } })
+    fireEvent.change(screen.getByLabelText('Akses Booking'), { target: { value: 'booking-manager' } })
+    fireEvent.change(screen.getByLabelText('Password awal'), { target: { value: 'Secret-test-2026' } })
+    fireEvent.change(screen.getByLabelText('Konfirmasi password awal'), { target: { value: 'Secret-test-2026' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Buat akun' }))
+    expect(await screen.findByText(/berhasil dibuat dengan akses booking-manager/)).toBeTruthy()
+    expect(create).toHaveBeenCalledWith(alpha, {
+      name: 'Booking Tester', email: 'booking@example.test', password: 'Secret-test-2026', profile: 'booking-manager',
+    })
+    expect((screen.getByLabelText('Password awal') as HTMLInputElement).value).toBe('')
+    expect(screen.queryByText('Secret-test-2026')).toBeNull()
+  })
+  it('rejects mismatched initial passwords before sending account request', async () => {
+    const create = vi.spyOn(atlasApi.accounts, 'create')
+    mount(<AccountManagementPage />, ['accounts.manage'])
+    fireEvent.change(screen.getByLabelText('Nama lengkap'), { target: { value: 'Booking Tester' } })
+    fireEvent.change(screen.getByLabelText('Email kerja'), { target: { value: 'booking@example.test' } })
+    fireEvent.change(screen.getByLabelText('Password awal'), { target: { value: 'Secret-test-2026' } })
+    fireEvent.change(screen.getByLabelText('Konfirmasi password awal'), { target: { value: 'Different-secret' } })
+    await userEvent.click(screen.getByRole('button', { name: 'Buat akun' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('Konfirmasi password tidak sama.')
+    expect(create).not.toHaveBeenCalled()
+  })
   it('booking errors never show success; unchanged retry retains idempotency key', async () => {
     const book = vi.spyOn(atlasApi.capacity, 'book').mockRejectedValueOnce(new ApiError('Capacity conflict', 409)).mockResolvedValue({ data: { id: 'booking-real' } } as never)
     mount(<ReservationWorkspace />, ['bookings.create'])

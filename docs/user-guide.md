@@ -54,6 +54,7 @@
 - **Aset & Impor Jaringan** menerima KML/KMZ. Preview memberi ringkasan sebelum ditinjau. Import dapat menerbitkan fitur yang lolos klasifikasi/validasi otomatis dan menggabungkan data—import tidak menghapus aset atau booking. Pastikan entitas dan file benar sebelum upload. Kapasitas, tinggi tiang yang tidak ada di sumber, dan topologi tidak ditebak otomatis.
 - **Analisis banyak lokasi** menerima template XLSX, KML, atau KMZ. Upload memvalidasi dan menampilkan preview. Tombol **Setujui proses baris valid** memulai job analisis massal; ini bukan persetujuan kebijakan. Pantau job lalu unduh hasil XLSX.
 - **Pengaturan** digunakan untuk mengajukan perubahan kebijakan. Pengajuan baru berstatus Pending dan belum mengubah kebijakan aktif sampai pemeriksa berbeda menyetujuinya. Approval memerlukan izin sesuai jenis kebijakan.
+- **Administrasi → Buat Akun** hanya tersedia bagi akun dengan izin `accounts.manage` pada entitas aktif. Pilih Booking User untuk membuat/melihat booking atau Booking Manager untuk menambah release dan konversi ke Used. Password awal ditetapkan admin dan dibagikan melalui kanal terpisah; pendaftaran mandiri tetap ditutup.
 - **Audit Log** menampilkan riwayat aksi yang berhasil pada entitas. Detail dibatasi agar tidak menampilkan data customer atau kontak.
 
 ## Istilah penting

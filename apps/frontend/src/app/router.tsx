@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { AppShell } from '../layout/AppShell'
 import { AnalysisPage } from '../pages/AnalysisPage'
+import { AccountManagementPage } from '../pages/AccountManagementPage'
 import { AssetsPage } from '../pages/AssetsPage'
 import { BookingsPage } from '../pages/BookingsPage'
 import { DashboardPage } from '../pages/DashboardPage'
@@ -82,6 +83,12 @@ const accessAuditRoute = createRoute({
   component: UsersAuditPage,
 })
 
+const accountsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/accounts',
+  component: AccountManagementPage,
+})
+
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
   loginRoute,
@@ -94,6 +101,7 @@ const routeTree = rootRoute.addChildren([
   notificationsRoute,
   settingsRoute,
   accessAuditRoute,
+  accountsRoute,
 ])
 
 export const router = createRouter({ routeTree })

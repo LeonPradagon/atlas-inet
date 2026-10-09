@@ -81,7 +81,7 @@ export function NetworkMapPage() {
   return (
     <div className="row">
       <div className="col-lg-9">
-        <ContentCard title="Peta jaringan" tools={<span className="badge text-bg-secondary">OpenFreeMap</span>}>
+        <ContentCard title="Peta jaringan">
           <NetworkMapCanvas key={mapStyle} features={networkFeatures} visibleLayers={layers} style={mapStyle} onViewportChange={handleViewportChange} onSegmentSelect={setSelected} />
           {bbox && selectedLayers && <div className="d-flex flex-wrap align-items-center gap-2 mt-2">
             <button className="btn btn-sm btn-outline-primary" type="button" disabled={query.isFetching} onClick={loadCurrentViewport}>

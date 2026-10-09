@@ -27,6 +27,7 @@ export function createAuth(
     emailAndPassword: {
       enabled: true,
       disableSignUp: !allowSignUp,
+      autoSignIn: false,
     },
     advanced: {
       useSecureCookies: config.nodeEnv === 'production' && config.betterAuthUrl.startsWith('https://'),

@@ -1,13 +1,18 @@
-import { BadRequestException, Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common'
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common'
 import { z } from 'zod'
+import { parseInput } from '../../common/domain-input.js'
 import { AuthSessionGuard, type AuthenticatedRequest } from '../auth/auth-session.guard.js'
+import { AccountManagementService, managedAccountInput } from './account-management.service.js'
 import { AccessService } from './access.service.js'
 import { EntityPermissionGuard, RequireEntityPermission, type EntityScopedRequest } from './entity-permission.guard.js'
 
 @Controller('entities')
 @UseGuards(AuthSessionGuard)
 export class AccessController {
-  constructor(private readonly access: AccessService) {}
+  constructor(
+    private readonly access: AccessService,
+    private readonly accounts: AccountManagementService,
+  ) {}
 
   @Get()
   async list(@Req() request: AuthenticatedRequest, @Query() query: Record<string, unknown>) {
@@ -37,5 +42,18 @@ export class AccessController {
   @RequireEntityPermission('bookings.create')
   async presales(@Param('entityId') entityId: string) {
     return { data: await this.access.findPresalesUsers(entityId) }
+  }
+
+  @Post(':entityId/accounts')
+  @UseGuards(EntityPermissionGuard)
+  @RequireEntityPermission('accounts.manage')
+  async createAccount(
+    @Req() request: EntityScopedRequest,
+    @Param('entityId') entityId: string,
+    @Body() body: unknown,
+  ) {
+    const id = parseInput(z.uuid(), entityId)
+    const input = parseInput(managedAccountInput, body)
+    return { data: await this.accounts.create(id, request.authSession.user.id, input) }
   }
 }

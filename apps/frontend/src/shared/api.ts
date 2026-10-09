@@ -29,6 +29,7 @@ export const API_ENDPOINTS = {
   policyRequests: `${API_SERVICE_BASE}/settings/requests`,
   entityPresales: `${API_SERVICE_BASE}/entities`,
   audit: `${API_SERVICE_BASE}/audit-logs`,
+  entities: `${API_SERVICE_BASE}/entities`,
 } as const
 
 export class ApiError extends Error {
@@ -181,6 +182,9 @@ export const atlasApi = {
     decide: (id: string, action: 'approve' | 'reject' | 'cancel', reason: string) => post<PolicyChangeRequest>(`${API_ENDPOINTS.policyRequests}/${encodeURIComponent(id)}/${action}`, { reason }),
   },
   audit: (entityId: string, page: number, filters: { search?: string; action?: string; from?: string; to?: string }, signal?: AbortSignal, pageSize = 25) => get<AuditRecord[]>(API_ENDPOINTS.audit, { entityId, page, pageSize, ...filters }, signal),
+  accounts: {
+    create: (entityId: string, input: { name: string; email: string; password: string; profile: 'booking-user' | 'booking-manager' }) => post<{ id: string; name: string; email: string; profile: string }>(`${API_ENDPOINTS.entities}/${encodeURIComponent(entityId)}/accounts`, input),
+  },
   auth: {
     async signIn(email: string, password: string): Promise<void> {
       await axiosClient.post(API_ENDPOINTS.signInEmail, { email, password, callbackURL: '/' })

@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { NestFactory } from '@nestjs/core'
 import { Pool, Client } from 'pg'
+import { verifyPassword } from 'better-auth/crypto'
 import { drizzle } from 'drizzle-orm/node-postgres'
 import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { AppModule } from '../dist/app.module.js'
@@ -92,8 +93,8 @@ test('access domain: database constraints, provisioning and authenticated HTTP i
     app.useGlobalFilters(new ApiExceptionFilter())
     await app.listen(0, '127.0.0.1')
     const origin = await app.getUrl()
-    async function cookie(email) {
-      const response = await app.get(AuthService).instance.api.signInEmail({ body: { email, password }, asResponse: true })
+    async function cookie(email, accountPassword = password) {
+      const response = await app.get(AuthService).instance.api.signInEmail({ body: { email, password: accountPassword }, asResponse: true })
       assert.equal(response.status, 200)
       return response.headers.getSetCookie().map((item) => item.split(';')[0]).join('; ')
     }
@@ -101,6 +102,11 @@ test('access domain: database constraints, provisioning and authenticated HTTP i
     const bobCookie = await cookie('bob@example.test')
     const unscopedCookie = await cookie('unscoped@example.test')
     const get = (path, sessionCookie) => fetch(`${origin}/api/v1${path}`, { headers: sessionCookie ? { Cookie: sessionCookie } : {} })
+    const post = (path, sessionCookie, body) => fetch(`${origin}/api/v1${path}`, {
+      method: 'POST',
+      headers: { ...(sessionCookie ? { Cookie: sessionCookie } : {}), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
 
     await t.test('anonymous requests fail closed', async () => {
       for (const path of ['/me', '/entities', `/entities/${alpha.entityId}`]) assert.equal((await get(path)).status, 401)
@@ -129,6 +135,68 @@ test('access domain: database constraints, provisioning and authenticated HTTP i
       assert.deepEqual(data.permissions, [])
       assert.deepEqual((await (await get('/entities', unscopedCookie)).json()).data, [])
       assert.equal((await get(`/entities/${alpha.entityId}`, unscopedCookie)).status, 403)
+    })
+    await t.test('account creation is entity-scoped and assigns only fixed booking profiles', async () => {
+      await assert.rejects(app.get(AuthService).instance.api.signUpEmail({
+        body: { email: 'public-signup@example.test', name: 'Public Signup', password: `Test-only-${randomUUID()}` },
+      }))
+      await grant.grant({ ...alphaInput, roleCode: 'account-provisioner', permissions: ['accounts.manage'] })
+      const noPermission = await post(`/entities/${beta.entityId}/accounts`, bobCookie, {
+        name: 'Denied', email: 'denied@example.test', password: `Test-only-${randomUUID()}`, profile: 'booking-user',
+      })
+      assert.equal(noPermission.status, 403)
+      assert.equal((await post(`/entities/${beta.entityId}/accounts`, aliceCookie, {
+        name: 'Cross tenant', email: 'cross-tenant@example.test', password: `Test-only-${randomUUID()}`, profile: 'booking-user',
+      })).status, 403)
+      assert.equal((await post(`/entities/${alpha.entityId}/accounts`, unscopedCookie, {
+        name: 'Unscoped', email: 'unscoped-new@example.test', password: `Test-only-${randomUUID()}`, profile: 'booking-user',
+      })).status, 403)
+      assert.equal((await post(`/entities/${alpha.entityId}/accounts`, aliceCookie, {
+        name: 'Invalid role', email: 'invalid-role@example.test', password: `Test-only-${randomUUID()}`, profile: 'administrator',
+      })).status, 400)
+      await pool.query('UPDATE entities SET active = false WHERE id = $1', [alpha.entityId])
+      try {
+        assert.equal((await post(`/entities/${alpha.entityId}/accounts`, aliceCookie, {
+          name: 'Inactive entity', email: 'inactive-entity@example.test', password: `Test-only-${randomUUID()}`, profile: 'booking-user',
+        })).status, 403)
+      } finally {
+        await pool.query('UPDATE entities SET active = true WHERE id = $1', [alpha.entityId])
+      }
+
+      const userPassword = `Booking-user-${randomUUID()}`
+      const response = await post(`/entities/${alpha.entityId}/accounts`, aliceCookie, {
+        name: 'Booking User', email: 'booking-user@example.test', password: userPassword, profile: 'booking-user',
+      })
+      assert.equal(response.status, 201)
+      const { data: createdUser } = await response.json()
+      assert.deepEqual(createdUser, {
+        id: createdUser.id, name: 'Booking User', email: 'booking-user@example.test', profile: 'booking-user',
+      })
+      assert.equal('password' in createdUser, false)
+      const credential = await pool.query('SELECT a.provider_id, a.password FROM account a WHERE a.user_id = $1', [createdUser.id])
+      assert.equal(credential.rows[0]?.provider_id, 'credential')
+      assert.ok(credential.rows[0]?.password)
+      assert.equal(await verifyPassword({ hash: credential.rows[0].password, password: userPassword }), true)
+      assert.equal(Number((await pool.query('SELECT count(*) FROM session WHERE user_id = $1', [createdUser.id])).rows[0].count), 0)
+      const bookingUserCookie = await cookie(createdUser.email, userPassword)
+      const { data: bookingUser } = await (await get('/me', bookingUserCookie)).json()
+      assert.deepEqual(bookingUser.entityAccess[0].permissions, ['bookings.create', 'bookings.read', 'entities.read', 'network.read'])
+      assert.deepEqual(bookingUser.entityAccess[0].roles, ['booking-user'])
+
+      const managerPassword = `Booking-manager-${randomUUID()}`
+      const managerResponse = await post(`/entities/${alpha.entityId}/accounts`, aliceCookie, {
+        name: 'Booking Manager', email: 'booking-manager@example.test', password: managerPassword, profile: 'booking-manager',
+      })
+      assert.equal(managerResponse.status, 201)
+      const { data: manager } = await managerResponse.json()
+      const managerCookie = await cookie(manager.email, managerPassword)
+      const { data: managerAccess } = await (await get('/me', managerCookie)).json()
+      assert.deepEqual(managerAccess.entityAccess[0].permissions, ['allocations.write', 'bookings.create', 'bookings.read', 'bookings.release', 'entities.read', 'network.read'])
+      const audit = await pool.query('SELECT source FROM access_audit WHERE subject_user_id = $1', [manager.id])
+      assert.deepEqual(audit.rows.map((row) => row.source), [`admin-ui:${alice.user.id}`])
+      assert.equal((await post(`/entities/${alpha.entityId}/accounts`, aliceCookie, {
+        name: 'Duplicate', email: 'booking-user@example.test', password: `Test-only-${randomUUID()}`, profile: 'booking-user',
+      })).status, 409)
     })
     await t.test('malformed entity ID is rejected', async () => {
       assert.equal((await get('/entities/not-a-uuid', aliceCookie)).status, 400)

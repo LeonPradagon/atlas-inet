@@ -7,7 +7,7 @@ import { dateLabel, Field, MutationStatus, numberLabel, Pagination, QueryState, 
 import { JobPanel } from "../components/JobPanel";
 import { SegmentDetail } from "../components/SegmentTools";
 import { NetworkMapCanvas, type NetworkMapFeature } from "../components/NetworkMapCanvas";
-import type { UploadPreview } from '../shared/domain-types';
+import type { UploadPreview } from "../shared/domain-types";
 
 export function AnalysisPage() {
   const { entity, can } = useEntityScope();
@@ -17,7 +17,7 @@ export function AnalysisPage() {
     [longitude, setLongitude] = useState("");
   const [file, setFile] = useState<File | null>(null),
     [jobId, setJobId] = useState("");
-  const maxFileSize = /\.xlsx$/i.test(file?.name ?? '') ? 50 * 1024 * 1024 : 20 * 1024 * 1024;
+  const maxFileSize = /\.xlsx$/i.test(file?.name ?? "") ? 50 * 1024 * 1024 : 20 * 1024 * 1024;
   const analysis = useDomainMutation((input: Parameters<typeof atlasApi.analysis.run>[0]) => atlasApi.analysis.run(input));
   const upload = useDomainMutation(() => atlasApi.analysis.upload(entity!.id, file!));
   const template = useDomainMutation(() => atlasApi.analysis.template(entity!.id));
@@ -27,7 +27,7 @@ export function AnalysisPage() {
   if (result?.coordinates)
     features.push({ type: "Feature", geometry: { type: "Point", coordinates: [result.coordinates.longitude, result.coordinates.latitude] }, properties: { id: "analysis-input", name: "Lokasi input", layer: "analysis" } });
   if (result?.route?.geometry) features.push({ type: "Feature", geometry: result.route.geometry, properties: { id: "analysis-route", name: "Estimasi rute jalan", layer: "segments" } });
-  function run(overrides?: { latitude: number; longitude: number; connectionPointId?: string; connectionPointType?: 'ODC' | 'ODP' }) {
+  function run(overrides?: { latitude: number; longitude: number; connectionPointId?: string; connectionPointType?: "ODC" | "ODP" }) {
     analysis.mutate({
       entityId: entity!.id,
       ...(overrides ? { latitude: overrides.latitude, longitude: overrides.longitude } : mode === "coordinates" ? { latitude: Number(latitude), longitude: Number(longitude) } : {}),
@@ -69,10 +69,10 @@ export function AnalysisPage() {
                     <>
                       <div className="row">
                         <div className="col-sm-6">
-                           <Field name="latitude" label="Lintang" value={latitude} onChange={setLatitude} type="number" min={-90} max={90} step="any" required />
+                          <Field name="latitude" label="Lintang" value={latitude} onChange={setLatitude} type="number" min={-90} max={90} step="any" required />
                         </div>
                         <div className="col-sm-6">
-                           <Field name="longitude" label="Bujur" value={longitude} onChange={setLongitude} type="number" min={-180} max={180} step="any" required />
+                          <Field name="longitude" label="Bujur" value={longitude} onChange={setLongitude} type="number" min={-180} max={180} step="any" required />
                         </div>
                       </div>
                       <p className="form-text">Contoh Jakarta: lintang -6.2, bujur 106.8.</p>
@@ -86,7 +86,8 @@ export function AnalysisPage() {
               </form>
               {analysis.isError && <MutationStatus mutation={analysis} />}
               <p className="form-text mt-3">
-                Koordinat langsung digunakan. Untuk alamat, sistem mencari lokasinya terlebih dahulu. Jika satu titik jaringan terhubung ke kabel terdekat, sistem akan memakainya otomatis. Jika ada beberapa, Anda dapat memilihnya untuk menghitung rute. Analisis ini tidak membuat booking.
+                Koordinat langsung digunakan. Untuk alamat, sistem mencari lokasinya terlebih dahulu. Jika satu titik jaringan terhubung ke kabel terdekat, sistem akan memakainya otomatis. Jika ada beberapa, Anda dapat memilihnya untuk
+                menghitung rute. Analisis ini tidak membuat booking.
               </p>
               <p className="form-text">Alamat yang kurang lengkap bisa membuat titik hanya perkiraan, misalnya di jalan atau pusat kawasan. Periksa hasilnya; pilih lokasi yang benar atau masukkan koordinat yang sudah Anda pastikan.</p>
             </ContentCard>
@@ -193,10 +194,13 @@ export function AnalysisPage() {
               <li>Unggah untuk memvalidasi dan melihat marker pada peta.</li>
               <li>Setujui pemrosesan; pantau job lalu unduh hasil XLSX.</li>
             </ol>
-            <button className="btn btn-outline-primary mb-3" type="button" disabled={template.isPending} onClick={() => template.mutate()}>Unduh template Excel</button>
+            <button className="btn btn-outline-primary mb-3" type="button" disabled={template.isPending} onClick={() => template.mutate()}>
+              Unduh template Excel
+            </button>
             <MutationStatus mutation={template} />
             <p className="small">
-              Excel menggunakan header reference_id, customer_name, address, latitude, longitude, notes, connection_point_id, connection_point_type. Isi alamat atau kedua koordinat; formula tidak diterima. KML aset FTTH diimpor melalui Aset & Impor Jaringan. Untuk rute kabel, isi connection_point_id dan connection_point_type (ODC/ODP) bersama-sama di Excel atau ExtendedData KML.
+              Excel menggunakan header reference_id, customer_name, address, latitude, longitude, notes, connection_point_id, connection_point_type. Isi alamat atau kedua koordinat; formula tidak diterima. KML aset FTTH diimpor melalui Aset
+              & Impor Jaringan. Untuk rute kabel, isi connection_point_id dan connection_point_type (ODC/ODP) bersama-sama di Excel atau ExtendedData KML.
             </p>
             <form
               onSubmit={(event) => {
@@ -220,7 +224,11 @@ export function AnalysisPage() {
                   submit.reset();
                 }}
               />
-              {file && file.size > maxFileSize && <p className="text-danger" role="alert">File melebihi batas {maxFileSize / 1024 / 1024} MB. Pilih file yang lebih kecil.</p>}
+              {file && file.size > maxFileSize && (
+                <p className="text-danger" role="alert">
+                  File melebihi batas {maxFileSize / 1024 / 1024} MB. Pilih file yang lebih kecil.
+                </p>
+              )}
               <button className="btn btn-primary" disabled={!file || file.size > maxFileSize || upload.isPending || submit.isPending}>
                 Upload dan preview
               </button>
@@ -253,32 +261,66 @@ function BulkPreview({ upload, total }: { upload: UploadPreview; total: number }
   const [pageSize, setPageSize] = useState(100);
   const paged = total > upload.preview.length;
   const rowsQuery = useInfiniteQuery({
-    queryKey: domainKey(entity?.id, user?.id, 'analysis-upload-rows', upload.id),
+    queryKey: domainKey(entity?.id, user?.id, "analysis-upload-rows", upload.id),
     initialPageParam: 1,
     queryFn: ({ pageParam, signal }) => atlasApi.analysis.uploadRows(upload.id, pageParam, signal),
-    getNextPageParam: (last) => last.meta && last.meta.page * last.meta.pageSize < last.meta.total ? last.meta.page + 1 : undefined,
-    enabled: paged, staleTime: Infinity,
+    getNextPageParam: (last) => (last.meta && last.meta.page * last.meta.pageSize < last.meta.total ? last.meta.page + 1 : undefined),
+    enabled: paged,
+    staleTime: Infinity,
   });
   const { hasNextPage, isFetching, isError, fetchNextPage } = rowsQuery;
   useEffect(() => {
     if (paged && hasNextPage && !isFetching && !isError) void fetchNextPage();
   }, [paged, hasNextPage, isFetching, isError, fetchNextPage]);
   const rows = useMemo(() => rowsQuery.data?.pages.flatMap((part) => part.data) ?? upload.preview, [rowsQuery.data, upload.preview]);
-  const features = useMemo<NetworkMapFeature[]>(() => rows.flatMap((row) => {
-    const latitude = row.input?.latitude, longitude = row.input?.longitude;
-    if (row.error || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
-    return [{ type: 'Feature', geometry: { type: 'Point', coordinates: [longitude!, latitude!] }, properties: { id: `bulk-${row.rowNumber}`, name: row.referenceId, layer: 'analysis' } }];
-  }), [rows]);
-  return <>
-    <p>Total {total} baris/lokasi. Dimuat {rows.length} dari {total}; {features.length} lokasi valid berkoordinat ditampilkan di peta. Alamat tanpa koordinat diproses setelah persetujuan.</p>
-    {paged && isFetching && <p role="status">Memuat seluruh lokasi secara bertahap…</p>}
-    {paged && isError && <div role="alert" className="alert alert-danger">Sebagian preview belum dimuat. <button type="button" onClick={() => void (rowsQuery.hasNextPage ? rowsQuery.fetchNextPage() : rowsQuery.refetch())}>Coba lagi</button></div>}
-    {features.length > 0 && <NetworkMapCanvas features={features} visibleLayers={{ analysis: true }} style="liberty" />}
-    <div className="table-responsive"><table className="table table-sm"><thead><tr><th>Baris</th><th>Reference</th><th>Validasi</th></tr></thead>
-      <tbody>{rows.slice((page - 1) * pageSize, page * pageSize).map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.referenceId}</td><td>{row.error ?? 'Valid'}</td></tr>)}</tbody>
-    </table></div>
-    <Pagination page={page} meta={{ page, pageSize, total: rows.length }} setPage={setPage} setPageSize={setPageSize} label="preview analisis" />
-  </>;
+  const features = useMemo<NetworkMapFeature[]>(
+    () =>
+      rows.flatMap((row) => {
+        const latitude = row.input?.latitude,
+          longitude = row.input?.longitude;
+        if (row.error || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return [];
+        return [{ type: "Feature", geometry: { type: "Point", coordinates: [longitude!, latitude!] }, properties: { id: `bulk-${row.rowNumber}`, name: row.referenceId, layer: "analysis" } }];
+      }),
+    [rows],
+  );
+  return (
+    <>
+      <p>
+        Total {total} baris/lokasi. Dimuat {rows.length} dari {total}; {features.length} lokasi valid berkoordinat ditampilkan di peta. Alamat tanpa koordinat diproses setelah persetujuan.
+      </p>
+      {paged && isFetching && <p role="status">Memuat seluruh lokasi secara bertahap…</p>}
+      {paged && isError && (
+        <div role="alert" className="alert alert-danger">
+          Sebagian preview belum dimuat.{" "}
+          <button type="button" onClick={() => void (rowsQuery.hasNextPage ? rowsQuery.fetchNextPage() : rowsQuery.refetch())}>
+            Coba lagi
+          </button>
+        </div>
+      )}
+      {features.length > 0 && <NetworkMapCanvas features={features} visibleLayers={{ analysis: true }} style="liberty" />}
+      <div className="table-responsive">
+        <table className="table table-sm">
+          <thead>
+            <tr>
+              <th>Baris</th>
+              <th>Reference</th>
+              <th>Validasi</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice((page - 1) * pageSize, page * pageSize).map((row) => (
+              <tr key={row.rowNumber}>
+                <td>{row.rowNumber}</td>
+                <td>{row.referenceId}</td>
+                <td>{row.error ?? "Valid"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Pagination page={page} meta={{ page, pageSize, total: rows.length }} setPage={setPage} setPageSize={setPageSize} label="preview analisis" />
+    </>
+  );
 }
 function routeStatusLabel(status: string) {
   const labels: Record<string, string> = {

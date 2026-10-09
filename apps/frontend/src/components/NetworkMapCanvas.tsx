@@ -810,12 +810,6 @@ export function NetworkMapCanvas({ features, visibleLayers, style, onViewportCha
   return (
     <>
       <div ref={containerRef} className={`network-map-canvas${cssFullscreen ? ' network-map-canvas-fallback-fullscreen' : ''}`} role="region" aria-label="Peta jaringan OpenFreeMap">
-        <button className="btn btn-light btn-sm" style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 2 }} type="button" disabled={!mapReady || !features.length} onClick={() => {
-          const map = mapRef.current, Bounds = boundsConstructorRef.current
-          if (!map || !Bounds) return
-          const bounds = getFeatureBounds(features.filter((feature) => visibleLayers[feature.properties.layer] !== false), Bounds)
-          if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 64, maxZoom: 13, duration: 300 })
-        }}>Tampilkan seluruh lokasi</button>
         <button className="network-map-fullscreen btn btn-light btn-sm" type="button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen ? 'Keluar dari layar penuh' : 'Tampilkan peta layar penuh'} title={isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}>
           <i className={`bi ${isFullscreen ? 'bi-fullscreen-exit' : 'bi-arrows-fullscreen'}`} aria-hidden="true" />
           <span className="visually-hidden">{isFullscreen ? 'Keluar layar penuh' : 'Layar penuh'}</span>
